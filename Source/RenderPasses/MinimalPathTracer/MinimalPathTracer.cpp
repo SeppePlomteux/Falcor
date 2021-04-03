@@ -41,7 +41,7 @@ extern "C" __declspec(dllexport) void getPasses(Falcor::RenderPassLibrary& lib)
 
 namespace
 {
-    const char kShaderFile[] = "RenderPasses/MinimalPathTracer/MinimalPathTracer.rt.slang";
+    const char kShaderFile[] = "RenderPasses/PPGPass/PPG.rt.slang";
 
     // Ray tracing settings that affect the traversal stack size.
     // These should be set as small as possible.
@@ -78,14 +78,13 @@ MinimalPathTracer::SharedPtr MinimalPathTracer::create(RenderContext* pRenderCon
 MinimalPathTracer::MinimalPathTracer(const Dictionary& dict)
 {
     // Deserialize pass from dictionary.
-    serializePass<true>(dict);
 
     // Create ray tracing program.
     RtProgram::Desc progDesc;
     progDesc.addShaderLibrary(kShaderFile).setRayGen("rayGen");
     progDesc.addHitGroup(0, "scatterClosestHit", "scatterAnyHit").addMiss(0, "scatterMiss");
     progDesc.addHitGroup(1, "", "shadowAnyHit").addMiss(1, "shadowMiss");
-    progDesc.addDefine("MAX_BOUNCES", std::to_string(mMaxBounces));
+    progDesc.addDefine("MAX_BOUNCES", std::to_string(3));
     progDesc.setMaxTraceRecursionDepth(kMaxRecursionDepth);
     mTracer.pProgram = RtProgram::create(progDesc, kMaxPayloadSizeBytes, kMaxAttributesSizeBytes);
 
@@ -97,7 +96,6 @@ MinimalPathTracer::MinimalPathTracer(const Dictionary& dict)
 Dictionary MinimalPathTracer::getScriptingDictionary()
 {
     Dictionary dict;
-    serializePass<false>(dict);
     return dict;
 }
 
@@ -116,12 +114,6 @@ void MinimalPathTracer::execute(RenderContext* pRenderContext, const RenderData&
 {
     // Update refresh flag if options that affect the output have changed.
     auto& dict = renderData.getDictionary();
-    if (mOptionsChanged)
-    {
-        auto flags = dict.getValue(kRenderPassRefreshFlags, RenderPassRefreshFlags::None);
-        dict[Falcor::kRenderPassRefreshFlags] = flags | Falcor::RenderPassRefreshFlags::RenderOptionsChanged;
-        mOptionsChanged = false;
-    }
 
     // If we have no scene, just clear the outputs and return.
     if (!mpScene)
@@ -141,11 +133,6 @@ void MinimalPathTracer::execute(RenderContext* pRenderContext, const RenderData&
     }
 
     // Configure depth-of-field.
-    const bool useDOF = mpScene->getCamera()->getApertureRadius() > 0.f;
-    if (useDOF && renderData[kViewDirInput] == nullptr)
-    {
-        logWarning("Depth-of-field requires the '" + std::string(kViewDirInput) + "' input. Expect incorrect shading.");
-    }
 
     // Specialize program.
     // These defines should not modify the program vars. Do not trigger program vars re-creation.
@@ -158,8 +145,8 @@ void MinimalPathTracer::execute(RenderContext* pRenderContext, const RenderData&
 
     // For optional I/O resources, set 'is_valid_<name>' defines to inform the program of which ones it can access.
     // TODO: This should be moved to a more general mechanism using Slang.
-    mTracer.pProgram->addDefines(getValidResourceDefines(kInputChannels, renderData));
-    mTracer.pProgram->addDefines(getValidResourceDefines(kOutputChannels, renderData));
+    //mTracer.pProgram->addDefines(getValidResourceDefines(kInputChannels, renderData));
+    //mTracer.pProgram->addDefines(getValidResourceDefines(kOutputChannels, renderData));
 
     // Prepare program vars. This may trigger shader compilation.
     // The program should have all necessary defines set at this point.
@@ -168,8 +155,8 @@ void MinimalPathTracer::execute(RenderContext* pRenderContext, const RenderData&
 
     // Set constants.
     auto pVars = mTracer.pVars;
-    pVars["CB"]["gFrameCount"] = mFrameCount;
-    pVars["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
+    //pVars["CB"]["gFrameCount"] = mFrameCount;
+    //pVars["CB"]["gPRNGDimension"] = dict.keyExists(kRenderPassPRNGDimension) ? dict[kRenderPassPRNGDimension] : 0u;
 
     // Bind I/O buffers. These needs to be done per-frame as the buffers may change anytime.
     auto bind = [&](const ChannelDesc& desc)
@@ -180,8 +167,8 @@ void MinimalPathTracer::execute(RenderContext* pRenderContext, const RenderData&
             pGlobalVars[desc.texname] = renderData[desc.name]->asTexture();
         }
     };
-    for (auto channel : kInputChannels) bind(channel);
-    for (auto channel : kOutputChannels) bind(channel);
+    //for (auto channel : kInputChannels) bind(channel);
+    //for (auto channel : kOutputChannels) bind(channel);
 
     // Get dimensions of ray dispatch.
     const uint2 targetDim = renderData.getDefaultTextureDims();
@@ -189,26 +176,10 @@ void MinimalPathTracer::execute(RenderContext* pRenderContext, const RenderData&
 
     // Spawn the rays.
     mpScene->raytrace(pRenderContext, mTracer.pProgram.get(), mTracer.pVars, uint3(targetDim, 1));
-
-    mFrameCount++;
 }
 
 void MinimalPathTracer::renderUI(Gui::Widgets& widget)
 {
-    bool dirty = false;
-
-    dirty |= widget.var("Max bounces", mMaxBounces, 0u, 1u<<16);
-    widget.tooltip("Maximum path length for indirect illumination.\n0 = direct only\n1 = one indirect bounce etc.", true);
-
-    dirty |= widget.checkbox("Evaluate direct illumination", mComputeDirect);
-    widget.tooltip("Compute direct illumination.\nIf disabled only indirect is computed (when max bounces > 0).", true);
-
-    // If rendering options that modify the output have changed, set flag to indicate that.
-    // In execute() we will pass the flag to other passes for reset of temporal data etc.
-    if (dirty)
-    {
-        mOptionsChanged = true;
-    }
 }
 
 void MinimalPathTracer::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene)
@@ -216,7 +187,6 @@ void MinimalPathTracer::setScene(RenderContext* pRenderContext, const Scene::Sha
     // Clear data for previous scene.
     // After changing scene, the program vars should to be recreated.
     mTracer.pVars = nullptr;
-    mFrameCount = 0;
 
     // Set new scene.
     mpScene = pScene;

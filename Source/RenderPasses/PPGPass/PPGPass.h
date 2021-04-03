@@ -36,7 +36,7 @@
 
 using namespace Falcor;
 
-class PPGPass : public PathTracer
+class PPGPass : public RenderPass
 {
 public:
     using SharedPtr = std::shared_ptr<PPGPass>;
@@ -71,41 +71,21 @@ public:
     virtual bool onMouseEvent(const MouseEvent& mouseEvent) override { return false; }
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override { return false; }
 
-    void updateSDTree(std::shared_ptr<TreeInfoTasks> tasks);
 
 
 private:
     PPGPass(const Dictionary& dict);
 
-    void updateTreeTextures(RenderContext* pRenderContext);
-
-    void resetStatisticalWeight(RenderContext* pRenderContext);
-    void rescaleTree(RenderContext* pRenderContext);
-    void splatIntoTree(RenderContext* pRenderContext, uint2 screenSize);
-    void propagateTreeSums(RenderContext* pRenderContext);
-    void updateTree(RenderContext* pRenderContext, std::vector<uint8_t>& statWeightVec);
-
 
     //size_t mCurrentSamplesPerPixel = 0;
     //size_t mMaxSamplesPerPixel = 1;
 
-    volatile bool mCurrentlyUpdatingTree = false;
 
     RtProgram::SharedPtr mpPPGProg;
     RtProgramVars::SharedPtr mpPPGVars;
-    ParameterBlock::SharedPtr mpPPGParamBlock;
 
-    struct
-    {
-        // Two dimentional textures
-        Texture::SharedPtr pSTreeTex;
-        Texture::SharedPtr pDTreeSumsTex;
-        Texture::SharedPtr pDTreeChildrenTex;
-        Texture::SharedPtr pDTreeParentTex;
-        // One dimentional textures
-        Texture::SharedPtr pDTreeSizeTex;
-        Texture::SharedPtr pDTreeStatisticalWeightTex;
-    } mTreeTextures;
+    Scene::SharedPtr mpScene;
+    SampleGenerator::SharedPtr mpSampleGenerator;
 
     /*struct
     {
@@ -115,32 +95,11 @@ private:
         Texture::SharedPtr pDTreeMutex;
     } mBuildingTreeTextures;*/
 
-    struct
-    {
-        Texture::SharedPtr pPosTex;
-        Texture::SharedPtr pRadianceTex;
-        Texture::SharedPtr pDirPdfTex;
-    } mSampleResultTextures;
 
     //STree::SharedPtr mpTree;
-    STreeStump::SharedPtr mpTree;
 
     //std::unique_ptr<std::thread> mpWorkingThread; // If Falcor exits, unique pointer ensures that working thread is stopped
 
-    struct
-    {
-        ComputePass::SharedPtr pBlitDTreePass;
-        ComputePass::SharedPtr pBlitSTreePass;
-
-        ComputePass::SharedPtr pResetStatisticalWeightPass;
-        ComputePass::SharedPtr pRescaleDTreePass;
-        ComputePass::SharedPtr pSplatIntoSDTreePass;
-        ComputePass::SharedPtr pPropagateDTreeSumsPass;
-        ComputePass::SharedPtr pUpdateDTreeStructurePass;
-        ComputePass::SharedPtr pCompressDTreePass;
-        ComputePass::SharedPtr pCompressSTreePass;
-        ComputePass::SharedPtr pCopySingleDTreePass;
-    } mSDTreeUpdatePasses;
 
     //ComputePass::SharedPtr mpResetStatisticalWeightPass;
     //ComputePass::SharedPtr mpResetMutexPass;

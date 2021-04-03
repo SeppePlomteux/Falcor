@@ -60,28 +60,10 @@ import Utils.Sampling.SampleGenerator;
 import Experimental.Scene.Material.MaterialShading;
 import Experimental.Scene.Lights.LightHelpers;
 
-cbuffer CB
-{
-    uint        gFrameCount;        // Frame count since scene was loaded.
-    uint        gPRNGDimension;     // First available PRNG dimension.
-}
 
-// Inputs
-Texture2D<float4> gWorldPosition;
-Texture2D<float4> gWorldShadingNormal;
-Texture2D<float4> gWorldShadingTangent; // Optional
-Texture2D<float4> gWorldFaceNormal;
-Texture2D<float4> gWorldView; // Optional
-Texture2D<float4> gMaterialDiffuseOpacity;
-Texture2D<float4> gMaterialSpecularRoughness;
-Texture2D<float4> gMaterialEmissive;
-Texture2D<float4> gMaterialExtraParams;
-
-// Outputs
-RWTexture2D<float4> gOutputColor;
 
 // Static configuration based on defines set from the host.
-#define isValid(name) (is_valid_##name != 0)
+/*#define isValid(name) (is_valid_##name != 0)
 static const uint kMaxBounces = MAX_BOUNCES;
 static const bool kComputeDirect = COMPUTE_DIRECT;
 static const bool kUseAnalyticLights = USE_ANALYTIC_LIGHTS;
@@ -89,7 +71,7 @@ static const bool kUseEmissiveLights = USE_EMISSIVE_LIGHTS;
 static const bool kUseEnvLight = USE_ENV_LIGHT;
 static const bool kUseEnvBackground = USE_ENV_BACKGROUND;
 static const float3 kDefaultBackgroundColor = float3(0, 0, 0);
-static const float kRayTMax = FLT_MAX;
+static const float kRayTMax = FLT_MAX;*/
 
 /** Payload for shadow ray.
 */
@@ -102,16 +84,16 @@ struct ShadowRayData
 */
 struct ScatterRayData
 {
-    float3  radiance;       ///< Accumulated outgoing radiance from path.
-    bool    terminated;     ///< Set to true when path is terminated.
-    float3  thp;            ///< Current path throughput. This is updated at each path vertex.
-    uint    pathLength;     ///< Path length in number of path segments (0 at origin, 1 at first secondary hit, etc.). Max 2^31.
-    float3  origin;         ///< Next path segment origin.
-    uint    _pad0;
-    float3  direction;      ///< Next path segment direction.
-    uint    _pad1;
+    float3 radiance; ///< Accumulated outgoing radiance from path.
+    bool terminated; ///< Set to true when path is terminated.
+    float3 thp; ///< Current path throughput. This is updated at each path vertex.
+    uint pathLength; ///< Path length in number of path segments (0 at origin, 1 at first secondary hit, etc.). Max 2^31.
+    float3 origin; ///< Next path segment origin.
+    uint _pad0;
+    float3 direction; ///< Next path segment direction.
+    uint _pad1;
 
-    SampleGenerator sg;     ///< Per-ray state for the sample generator (up to 16B).
+    SampleGenerator sg; ///< Per-ray state for the sample generator (up to 16B).
 
     /** Create ray payload with default parameters.
     */
@@ -131,7 +113,7 @@ struct ScatterRayData
 
 /** Helper to load the material attributes.
 */
-MaterialParams loadMaterialParams(uint2 pixelPos)
+/*MaterialParams loadMaterialParams(uint2 pixelPos)
 {
     MaterialParams matParams;
     matParams.diffuseOpacity = gMaterialDiffuseOpacity[pixelPos];
@@ -140,11 +122,11 @@ MaterialParams loadMaterialParams(uint2 pixelPos)
     matParams.extraParams = gMaterialExtraParams[pixelPos];
 
     return matParams;
-}
+}*/
 
 /** Returns the primary ray's direction.
 */
-float3 getPrimaryRayDir(uint2 launchIndex, uint2 launchDim, const Camera camera)
+/*float3 getPrimaryRayDir(uint2 launchIndex, uint2 launchDim, const Camera camera)
 {
     if (isValid(gWorldView))
     {
@@ -158,7 +140,7 @@ float3 getPrimaryRayDir(uint2 launchIndex, uint2 launchDim, const Camera camera)
         // sample generator between the passes, which is error prone. The host side will issue a warning instead.
         return camera.computeRayPinhole(launchIndex, launchDim).dir;
     }
-}
+}*/
 
 /** Traces a shadow ray towards a light source.
     \param[in] origin Ray origin for the shadow ray.
@@ -166,7 +148,7 @@ float3 getPrimaryRayDir(uint2 launchIndex, uint2 launchDim, const Camera camera)
     \param[in] distance Distance to the light source.
     \return True if light is visible, false otherwise.
 */
-bool traceShadowRay(float3 origin, float3 dir, float distance)
+/*bool traceShadowRay(float3 origin, float3 dir, float distance)
 {
     RayDesc ray;
     ray.Origin = origin;
@@ -176,15 +158,15 @@ bool traceShadowRay(float3 origin, float3 dir, float distance)
 
     ShadowRayData rayData;
     rayData.visible = false;    // Set to true by miss shader if ray is not terminated before
-    TraceRay(gRtScene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff /* instanceInclusionMask */, 1 /* hitIdx */, hitProgramCount, 1 /* missIdx */, ray, rayData);
+    TraceRay(gRtScene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff /* instanceInclusionMask *//*, 1 /* hitIdx *//*, hitProgramCount, 1 /* missIdx *//*, ray, rayData);
 
     return rayData.visible;
-}
+}*/
 
 /** Traces a scatter ray based on ray parameters stored in the ray payload.
     \param[in] rayData Describes the ray parameters. The struct is modified based on the result.
 */
-void traceScatterRay(inout ScatterRayData rayData)
+/*void traceScatterRay(inout ScatterRayData rayData)
 {
     RayDesc ray;
     ray.Origin = rayData.origin;
@@ -193,8 +175,8 @@ void traceScatterRay(inout ScatterRayData rayData)
     ray.TMax = kRayTMax;
 
     uint rayFlags = 0;      // TODO: Set cull mode from the app
-    TraceRay(gRtScene, rayFlags, 0xff /* instanceInclusionMask */, 0 /* hitIdx */, hitProgramCount, 0 /* missIdx */, ray, rayData);
-}
+    TraceRay(gRtScene, rayFlags, 0xff /* instanceInclusionMask *//*, 0 /* hitIdx *//*, hitProgramCount, 0 /* missIdx *//*, ray, rayData);
+}*/
 
 /** Evaluates the direct illumination from analytic lights.
     This function samples Falcor's light list uniformly with one shadow ray.
@@ -203,7 +185,7 @@ void traceScatterRay(inout ScatterRayData rayData)
     \param[in] sg SampleGenerator object.
     \return Outgoing radiance in view direction.
 */
-float3 evalDirectAnalytic(const ShadingData sd, float3 rayOrigin, inout SampleGenerator sg)
+/*float3 evalDirectAnalytic(const ShadingData sd, float3 rayOrigin, inout SampleGenerator sg)
 {
     const uint lightCount = gScene.getLightCount();
     if (lightCount == 0) return float3(0);
@@ -222,7 +204,7 @@ float3 evalDirectAnalytic(const ShadingData sd, float3 rayOrigin, inout SampleGe
     // Test visibility by tracing a shadow ray.
     bool V = traceShadowRay(rayOrigin, ls.dir, ls.distance);
     return V ? evalBSDFCosine(sd, ls.dir) * ls.Li * invPdf : float3(0);
-}
+}*/
 
 /** Processes a hit point to generate a scatter ray or terminate.
     This function generates a cosine-weighted direction over the hemisphere.
@@ -230,7 +212,7 @@ float3 evalDirectAnalytic(const ShadingData sd, float3 rayOrigin, inout SampleGe
     \param[in] rayOrigin Ray origin for the new ray.
     \param[in] rayData Ray payload.
 */
-void generateScatterRay(const ShadingData sd, float3 rayOrigin, inout ScatterRayData rayData)
+/*void generateScatterRay(const ShadingData sd, float3 rayOrigin, inout ScatterRayData rayData)
 {
     // Generate scatter ray as cosine-weighted direction over the hemisphere.
     float pdf = 0.f;
@@ -241,7 +223,7 @@ void generateScatterRay(const ShadingData sd, float3 rayOrigin, inout ScatterRay
     rayData.origin = rayOrigin;
     rayData.direction = wi;
     rayData.thp *= pdf > 0.f ? evalBSDFCosine(sd, wi) / pdf : float3(0);
-}
+}*/
 
 /** ********************* Ray index 0: Scatter ray ************************ */
 
@@ -252,11 +234,11 @@ void scatterMiss(inout ScatterRayData rayData : SV_RayPayload)
     rayData.terminated = true;
 
     // Add contribution from distant light (env map) in this direction.
-    if (kUseEnvLight && (kComputeDirect || rayData.pathLength > 0))
+    /*if (kUseEnvLight && (kComputeDirect || rayData.pathLength > 0))
     {
         float3 Le = gScene.envMap.eval(WorldRayDirection());
         rayData.radiance += rayData.thp * Le;
-    }
+    }*/
 }
 
 [shader("anyhit")]
@@ -267,7 +249,8 @@ void scatterAnyHit(
     // Alpha test for non-opaque geometry.
     VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
     const uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
-    if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f)) IgnoreHit();
+    if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f))
+        IgnoreHit();
 }
 
 [shader("closesthit")]
@@ -282,7 +265,7 @@ void scatterClosestHit(
     ShadingData sd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -WorldRayDirection(), 0.f);
 
     // Add emitted light.
-    if (kUseEmissiveLights && (kComputeDirect || rayData.pathLength > 0))
+    /*if (kUseEmissiveLights && (kComputeDirect || rayData.pathLength > 0))
     {
         rayData.radiance += rayData.thp * sd.emissive;
     }
@@ -306,9 +289,9 @@ void scatterClosestHit(
 
     // Generate scatter ray for the next path segment.
     // The raygen shader will continue the path based on the returned payload.
-    generateScatterRay(sd, rayOrigin, rayData);
+    //generateScatterRay(sd, rayOrigin, rayData);
 
-    rayData.pathLength++;
+    rayData.pathLength++;*/
 }
 
 /************************** Ray index 1: Shadow ray ************************ */
@@ -328,7 +311,8 @@ void shadowAnyHit(
     // Alpha test for non-opaque geometry.
     VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
     const uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
-    if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f)) IgnoreHit();
+    if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f))
+        IgnoreHit();
 }
 
 /** ******************************** RayGen ******************************** */
@@ -345,7 +329,7 @@ void shadowAnyHit(
 [shader("raygeneration")]
 void rayGen()
 {
-    uint2 launchIndex = DispatchRaysIndex().xy;
+    /*uint2 launchIndex = DispatchRaysIndex().xy;
     uint2 launchDim = DispatchRaysDimensions().xy;
 
     float3 outColor = float3(0, 0, 0);
@@ -413,5 +397,5 @@ void rayGen()
         outColor = kUseEnvBackground ? gScene.envMap.eval(rayDir) : kDefaultBackgroundColor;
     }
 
-    gOutputColor[launchIndex] = float4(outColor, 1);
+    gOutputColor[launchIndex] = float4(outColor, 1);*/
 }

@@ -1,472 +1,119 @@
-#define G_PI 3.141592653589793
-#define G_16_BITMASK_LEFT  0xFFFF0000
-#define G_16_BITMASK_RIGHT 0x0000FFFF
+/***************************************************************************
+ # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ #
+ # Redistribution and use in source and binary forms, with or without
+ # modification, are permitted provided that the following conditions
+ # are met:
+ #  * Redistributions of source code must retain the above copyright
+ #    notice, this list of conditions and the following disclaimer.
+ #  * Redistributions in binary form must reproduce the above copyright
+ #    notice, this list of conditions and the following disclaimer in the
+ #    documentation and/or other materials provided with the distribution.
+ #  * Neither the name of NVIDIA CORPORATION nor the names of its
+ #    contributors may be used to endorse or promote products derived
+ #    from this software without specific prior written permission.
+ #
+ # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS "AS IS" AND ANY
+ # EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ # PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ # CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ # EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ # PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ # PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ # OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ **************************************************************************/
 
+/** Minimal path tracer.
 
-/*import Scene.Raytracing;
+    The purpose is to use it for validation of more complex renderers.
+    The implementation here should be kept as simple/naive as possible.
+
+    At each hit point (including the primary hit loaded from the G-buffer),
+    analytic light sources (point, directional) are sampled uniformly using
+    1 shadow ray, and 1 scatter ray is traced to sample the hemisphere.
+    At hit/miss the scatter ray includes light from emissive surface and
+    the environment map, respectively. Traversal stops at a fixed path length.
+
+    Each type of light (analytic, emissive, env map) can be individually
+    enabled/disabled from the host. This clutters the code a bit, but it is
+    important as not all other renderes may support all three light types.
+
+    The host sets the following defines:
+
+    MAX_BOUNCES         Maximum number of indirect bounces (0 means no indirect).
+    COMPUTE_DIRECT      Nonzero if direct illumination should be included.
+    USE_ANALYTIC_LIGHTS Nonzero if Falcor's analytic lights should be used.
+    USE_EMISSIVE_LIGHTS Nonzero if emissive geometry should be used as lights.
+    USE_ENV_LIGHT       Nonzero if env map is available and should be used as light source.
+    USE_ENV_BACKGROUND  Nonzero if env map is available and should be used as background.
+    is_valid_<name>     1 if optional I/O buffer with this name should be used.
+*/
+
+#include "Utils/Math/MathConstants.slangh"
+
+import Scene.Raytracing;
 import Utils.Math.MathHelpers;
 import Utils.Sampling.SampleGenerator;
 import Experimental.Scene.Material.MaterialShading;
 import Experimental.Scene.Lights.LightHelpers;
 
-import RenderPasses.Shared.PathTracer.PathTracerHelpers;*/
 
-import Experimental.Scene.Material.MaterialShading;
-import Utils.Math.MathHelpers;
-import Utils.Sampling.SampleGenerator;
-import RenderPasses.Shared.PathTracer.PathTracerHelpers;
-//import Scene.Scene;
-import Scene.Raytracing; // contains HitShaderParams
-//import Scene.HitInfo;
-import RenderPasses.Shared.PathTracer.RayFootprint;
 
-Texture2D<float4> gDTreeSums;
-// |ch0ch1| |ch2ch3|
-Texture2D<uint2> gDTreeChildren;
+// Static configuration based on defines set from the host.
+/*#define isValid(name) (is_valid_##name != 0)
+static const uint kMaxBounces = MAX_BOUNCES;
+static const bool kComputeDirect = COMPUTE_DIRECT;
+static const bool kUseAnalyticLights = USE_ANALYTIC_LIGHTS;
+static const bool kUseEmissiveLights = USE_EMISSIVE_LIGHTS;
+static const bool kUseEnvLight = USE_ENV_LIGHT;
+static const bool kUseEnvBackground = USE_ENV_BACKGROUND;
+static const float3 kDefaultBackgroundColor = float3(0, 0, 0);
+static const float kRayTMax = FLT_MAX;*/
 
-Texture2D<uint4> gSTreeData; // x: DTreeIndex, y: axis, zw: child indices
-
-RWTexture2D<float4> gOutputColor;
-
-// pos (x, y, y) (relative)
-RWTexture2D<float4> gSamplePos;
-// Li  (r, g, b)
-RWTexture2D<float4> gSampleRadiance;
-// dir (u, v) and pdf
-RWTexture2D<float4> gSamplePdf;
-
-// Shading inputs
-Texture2D<float4> gWorldPos; // w component contains depth
-Texture2D<float4> gShadingNormal;
-Texture2D<float4> gGeometricNormal;
-Texture2D<float4> gMaterialDiffuseOpacity;
-Texture2D<float4> gMaterialSpecularRoughness;
-Texture2D<float4> gMaterialEmissive;
-Texture2D<float4> gMaterialExtraParams;
-
-struct SharedTracerData
+/** Payload for shadow ray.
+*/
+struct ShadowRayData
 {
-    PathTracerParams params;
-    EnvMapSampler envMapSampler;
-    EmissiveLightSampler emissiveLightSampler;
+    bool visible;
 };
 
-ParameterBlock<SharedTracerData> gData;
-
-cbuffer PPGBuf
-{   
-    uint gAmountOfSTreeNodesPerRow;
-    uint gFrameIndex; // Frame index for initialising samplegenerator
-    uint2 _gPadding;
-    /**** Memory block stops here ****/
-    float3 gSceneMin;
-    uint _gPadding2;
-    /**** Memory block stops here ****/
-    float3 gSceneMax;
-};
-
-// Payload is attached to a ray and can be changed by hit and miss shaders.
-// Final value of this payload is written back to the caller (TraceRay has payload parameter)
-struct ShadowRayPayload
+/** Payload for scatter ray (80B).
+*/
+struct ScatterRayData
 {
-    bool mVisible = false;
-};
+    float3 radiance; ///< Accumulated outgoing radiance from path.
+    bool terminated; ///< Set to true when path is terminated.
+    float3 thp; ///< Current path throughput. This is updated at each path vertex.
+    uint pathLength; ///< Path length in number of path segments (0 at origin, 1 at first secondary hit, etc.). Max 2^31.
+    float3 origin; ///< Next path segment origin.
+    uint _pad0;
+    float3 direction; ///< Next path segment direction.
+    uint _pad1;
 
-struct ScatterRayPayload // In total 80 bytes
-{
-    //uint2 mPackedHitInfoData;
-    float3 mThrouhgput; // 12 bytes
-    uint mSampleTreeIndex; // 4 bytes
-    float3 mLTotal;
-    uint mSampleNodeIndex;
-    float3 mNextSampleOrigin;
-    uint mEvalEmissive;
-    float3 mNextSampleDir;
-    float mSamplePdf;
-    SampleGenerator mSampleGenerator; // max 16 Bytes
-};
+    SampleGenerator sg; ///< Per-ray state for the sample generator (up to 16B).
 
-struct DTreeNode
-{
-    // if mSums == (0, 0, 0, 0), then node is empty
-    float4 mSums;
-    uint2 mChildren;
-
-    // Encode a leaf as a node with child indices 0 (which is the root)
-    bool isLeaf()
+    /** Create ray payload with default parameters.
+    */
+    static ScatterRayData create(SampleGenerator sg)
     {
-        return all(mChildren == 0);
-    }
-
-    uint getChildIndex(uint localIndex)
-    {
-        uint packedData = localIndex <= 1 ? mChildren.x : mChildren.y;
-        return localIndex & 1 ? packedData & G_16_BITMASK_RIGHT : packedData >> 16;
+        ScatterRayData d;
+        d.terminated = false;
+        d.pathLength = 0;
+        d.radiance = float3(0, 0, 0);
+        d.thp = float3(1, 1, 1);
+        d.origin = float3(0, 0, 0);
+        d.direction = float3(0, 0, 0);
+        d.sg = sg;
+        return d;
     }
 };
 
-// Decent into the DTree, calculate child index and update p (rescale to [0, 1])
-uint decentIntoDTree(inout float2 p)
-{
-    //bool2 kaas = p < float2(.5f);
-    //p = kaas ? p * 2 : mad(2.f, p, -1.f);
-    //return mad(2, kaas.y, kaas.x);
-    uint2 kaas = p < float2(.5f) ? 1 : 0;
-    p = kaas ? p * 2 : mad(2.f, p, -1.f);
-    return mad(2, 1 - kaas.y, 1 - kaas.x);
-}
-
-DTreeNode buildDTreeNode(uint treeIndex, uint nodeIndex)
-{
-    DTreeNode res = { };
-    uint2 texIndex = uint2(nodeIndex, treeIndex);
-    res.mSums = gDTreeSums[texIndex];
-    res.mChildren = gDTreeChildren[texIndex];
-    return res;
-}
-
-struct STreeNode
-{
-    uint mDTreeIndex;
-    uint mAxis;
-    uint2 mChildren;
-
-    bool isLeaf()
-    {
-        return all(mChildren == 0);
-    }
-};
-
-STreeNode buildSTreeNode(uint nodeIndex)
-{
-    STreeNode res = { };
-    uint2 texIndex = uint2(nodeIndex % gAmountOfSTreeNodesPerRow, nodeIndex / gAmountOfSTreeNodesPerRow);
-    uint4 packedData = gSTreeData[texIndex];
-    res.mDTreeIndex = packedData.x;
-    res.mAxis = packedData.y;
-    res.mChildren = packedData.zw;
-    return res;
-}
-
-float3 canonicalToDir(float2 p)
-{
-    const float cosTheta = 2 * p.x - 1;
-    const float phi = 2 * G_PI * p.y;
-
-    const float sinTheta = sqrt(1 - cosTheta * cosTheta);
-    float sinPhi = sin(phi);
-    float cosPhi = cos(phi);
-
-    return float3(sinTheta * cosPhi, sinTheta * sinPhi, cosTheta);
-}
-
-float2 dirToCanonical(float3 dir)
-{
-    if (!all(isfinite(dir)))
-    {
-        return float2(0.f, 0.f);
-    }
-
-    const float cosTheta = clamp(dir.z, -1.f, 1.f);
-    float phi = atan2(dir.y, dir.x);
-    phi = phi < 0 ? phi + 2.f * G_PI : phi;
-    
-    return float2((cosTheta + 1) / 2, phi / (2 * G_PI));
-}
-
-struct HemisphereSample
-{
-    float2 mSample;
-    float pdf;
-
-    float3 getSampleAsDir()
-    {
-        return canonicalToDir(mSample);
-    }
-};
-
-float calc_pdf(float2 p, const uint dTreeIndex, DTreeNode node)
-{
-    const uint kMaxIters = 30; // Max DTree depth is 20, so no problem
-    bool keepGoing = true;
-    float res = 1;
-    uint i = 0;
-    while (keepGoing)
-    {
-        float sum = node.mSums.x + node.mSums.y + node.mSums.z + node.mSums.w;
-        
-        if (sum == 0.f)
-        {
-            break;
-        }
-        
-        uint relIndex = decentIntoDTree(p);
-        uint absIndex = node.getChildIndex(relIndex);
-        
-        res *= 4 * node.mSums[relIndex] / sum;
-        
-        if (absIndex == 0)
-            keepGoing = false;
-        else
-            node = buildDTreeNode(dTreeIndex, absIndex);
-    }
-    res = res / (4 * G_PI);
-    return res;
-}
-
-HemisphereSample sampleDTree(uint treeIndex, DTreeNode currNode, SampleGenerator sg)
-{
-    bool keepGoing = true;
-    float offsetFactor = 1.f;
-    uint absIndex = 0;
-    HemisphereSample res;
-    res.mSample = float2(0.f, 0.f);
-    res.pdf = 1;
-    while (keepGoing)
-    {
-        float rand = sampleNext1D(sg); // Sample a random number
-        // sample one of the 4 subspheres
-        float4 cummulativeSums = currNode.mSums;
-        cummulativeSums.y = cummulativeSums.x + cummulativeSums.y;
-        cummulativeSums.z = cummulativeSums.y + cummulativeSums.z;
-        cummulativeSums.w = cummulativeSums.z + cummulativeSums.w;
-
-        if (cummulativeSums.w == 0.f)
-        {
-            break;
-        }
-        
-        rand *= cummulativeSums.w;
-        uint4 indexHelper = cummulativeSums <= rand ? 1u : 0u;
-        uint relIndex = indexHelper.x + indexHelper.y + indexHelper.z + indexHelper.w;
-        absIndex = currNode.getChildIndex(relIndex);
-
-        res.pdf *= 4 * currNode.mSums[relIndex] / cummulativeSums.w;
-
-        float2 relOffset = float2(relIndex & 1 ? 0.5f : 0.f, relIndex & 2 ? 0.5f : 0.f);
-        res.mSample = mad(offsetFactor, relOffset, res.mSample);
-        offsetFactor *= 0.5f;
-        
-        if (absIndex == 0)
-            keepGoing = false;
-        else
-        {
-            currNode = buildDTreeNode(treeIndex, absIndex);
-        }
-    }
-    res.mSample = saturate(mad(offsetFactor, sampleNext2D(sg), res.mSample));
-    res.pdf = res.pdf / (4 * G_PI);
-    return res;
-}
-
-/*float2 sampleDTree(uint treeIndex, DTreeNode currNode, SampleGenerator sg)
-{
-    float factor = 1.f; // was 0.5f
-    float2 res = float2(0.f);
-    while (!currNode.isLeaf())
-    {
-        float rand = sampleNext1D(sg);
-        float4 sums = currNode.mSums;
-        sums.y = sums.x + sums.y;
-        sums.z = sums.y + sums.z;
-        sums.w = sums.z + sums.w;
-        if (sums.w == 0.f)
-            break;
-        rand *= sums.w;
-        sums = sums <= rand ? 1u : 0u;
-        uint index = sums.x + sums.y + sums.z + sums.w;
-        float2 origin = float2(index & 1 ? 0.5 : 0, index & 2 ? 0.5 : 0);
-        res = mad(factor, origin, res); // factor*origin + res
-        factor *= .5f;
-        
-        if (currNode.getChildIndex(index) == 0)
-        {
-            break;
-        }
-        
-        currNode = buildDTreeNode(treeIndex, currNode.getChildIndex(index));
-    }
-
-    return mad(factor, sampleNext2D(sg), res);
-    
-
-    /*DTreeNode nextNode = buildDTreeNode(treeIndex, currNode.getChildIndex(index));
-    
-    if (nextNode.isLeaf())
-    {
-        return origin + 0.5f * float2(0.f); // Generate random 2D number here (at space of 0)
-    }
-    else
-    {
-        return origin + 0.5f * sampleDTree(treeIndex, nextNode);
-    }
-}*/
-
-HemisphereSample sampleDTree(uint treeIndex, SampleGenerator sg)
-{
-    // check if tree is empty, if so, return uniformly random number
-    DTreeNode node = buildDTreeNode(treeIndex, 0);
-    if (all(node.mSums == 0.f))
-    {
-        HemisphereSample res = { };
-        res.mSample = sampleNext2D(sg);
-        //res.mSample = float2(0.5, 0.5);
-        res.pdf = 0.25 / G_PI;
-        return res;
-    }
-    const float uniformPdfProbability = 0.1f;
-    float rand = sampleNext1D(sg);
-    HemisphereSample res;
-    if (rand < uniformPdfProbability)
-    {
-        res.mSample = sampleNext2D(sg);
-        //res.pdf = 1; // nee dus
-        res.pdf = (1 - uniformPdfProbability) *
-            calc_pdf(res.mSample, treeIndex, buildDTreeNode(treeIndex, 0)) +
-            0.25 * uniformPdfProbability / G_PI;
-    }
-    else
-    {
-        res = sampleDTree(treeIndex, buildDTreeNode(treeIndex, 0), sg);
-        res.pdf = (1 - uniformPdfProbability) * res.pdf + 0.25 * uniformPdfProbability / G_PI;
-    }
-    return res;
-}
-
-uint sampleSTree(float3 loc, float3 min, float3 size, STreeNode node)
-{
-    while (!node.isLeaf())
-    {
-        size[node.mAxis] /= 2;
-        uint index = loc[node.mAxis] < min[node.mAxis] + size[node.mAxis] ? 0 : 1;
-        if (index == 1)
-            min[node.mAxis] += size[node.mAxis];
-        
-        /*uint index = loc[node.mAxis] < size[node.mAxis] ? 0 : 1;
-        if (index == 1)
-            loc[node.mAxis] -= size[node.mAxis];*/
-
-        node = buildSTreeNode(node.mChildren[index]);
-    }
-    return node.mDTreeIndex;
-    //if (node.isLeaf())
-    //   return node.mDTreeIndex;
-    //return sampleSTree(loc, size, buildSTreeNode(node.mChildren[index]));
-}
-
-// Loc must be relative!! (must lie between (0,0,0) and size)
-HemisphereSample sampleSTree(float3 loc, SampleGenerator sg)
-{
-    // decent into STree to find leaf node
-    uint dTreeInd = sampleSTree(loc, gSceneMin, gSceneMax - gSceneMin, buildSTreeNode(0));
-    // sample from DTree in leaf node
-    return sampleDTree(dTreeInd, sg);
-}
-
-/*float calc_pdf(float3 dir, float3 loc, float3 size)
-{
-    uint dTreeInd = sampleSTree(loc, size, buildSTreeNode(0));
-    return calc_pdf(dirToCanonical(dir), dTreeInd, buildDTreeNode(dTreeInd, 0));
-}*/
-
-/*******************************/
-/***** SCATTER RAY SHADERS *****/
-/*******************************/
-
-// Scatter ray anyhit shader
-[shader("anyhit")]
-void scatterRayAnyHit(
-    uniform HitShaderParams hitParams, // Contains some hit information (provided by Falcor)
-    inout ScatterRayPayload payload : SV_RayPayload, // Payload defined above
-    BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes) // Intersection Attributes of hardware raytracing hardware
-{
-    // possible ignore hit if transparent, for now, do nothing
-}
-
-// Scatter ray closest hit
-// This is the only scatter ray shader that does any work
-[shader("closesthit")]
-void scatterRayClosestHit(
-    uniform HitShaderParams hitParams, // Contains some hit information (provided by Falcor)
-    inout ScatterRayPayload payload : SV_RayPayload, // Payload defined above
-    BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes) // Intersection Attributes of hardware raytracing hardware
-{
-    for (int i = 0; i < 2; i++) // TODO test
-        sampleNext2D(payload.mSampleGenerator);
-    
-    VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
-    const uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
-    ShadingData sd = prepareShadingData(v, materialID, gScene.materials[materialID],
-        gScene.materialResources[materialID], -WorldRayDirection(), 0.f);
-    
-    float3 rayOrigin = sd.computeNewRayOrigin();
-    
-    /*SceneLightSample sls; //
-    bool sampleSucceeded = sampleSceneLights(
-        gData.params, gData.envMapSampler, gData.emissiveLightSampler, sd, rayOrigin, 1, sg, sls
-    );
-
-    RayDesc ray = { };
-    ray.Origin = absPos;
-    ray.Direction = sampleDir;
-    ray.TMin = 1e-3f; // Maybe change
-    ray.TMax = kRayTMax; // kRayTMax is defined somewhere*/
-    
-    //if (payload.mSamplePdf >= 0)
-    payload.mLTotal += payload.mEvalEmissive ? payload.mThrouhgput * sd.emissive : float3(0.f);
-    payload.mEvalEmissive = 1;
-    
-    HemisphereSample nextSample = sampleSTree(rayOrigin, payload.mSampleGenerator);
-    
-    payload.mNextSampleDir = nextSample.getSampleAsDir();
-    payload.mNextSampleOrigin = rayOrigin;
-    payload.mThrouhgput *= evalBSDFCosine(sd, payload.mNextSampleDir) * rcp(nextSample.pdf);
-    
-    payload.mSamplePdf = nextSample.pdf;
-
-    payload.mSampleTreeIndex = 0;
-
-}
-
-// Scatter ray miss
-[shader("miss")]
-void scatterRayMiss(inout ScatterRayPayload rayPayload : SV_RayPayload)
-{
-    // Do nothing, payload was initilised as invalid!
-}
-
-/*******************************/
-/***** SHADOW  RAY SHADERS *****/
-/*******************************/
-
-// Shadow ray anyhit shader
-[shader("anyhit")]
-void shadowRayAnyHit(
-    uniform HitShaderParams hitParams, // Contains some hit information (provided by Falcor)
-    inout ShadowRayPayload rayData : SV_RayPayload, // Payload defined above
-    BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes) // Intersection Attributes of hardware raytracing hardware
-{
-    // Found a hit, light source is not visible
-    // Possible ignore hit if material is transparent (alpha == 0.f)
-    AcceptHitAndEndSearch();
-}
-
-// Shadow ray closest hit (not needed for shadow rays)
-//[shader("closesthit")]
-//void shadowRayClosestHit( /* args */)
-//{
-//    // Not needed
-//}
-
-// Shadow ray miss
-[shader("miss")]
-void shadowRayMiss(inout ShadowRayPayload rayData : SV_RayPayload)
-{
-    // No intersections found (or found and ignored), light source is visible.
-    rayData.mVisible = true;
-}
-
-MaterialParams loadMaterialParams(uint2 pixelPos)
+/** Helper to load the material attributes.
+*/
+/*MaterialParams loadMaterialParams(uint2 pixelPos)
 {
     MaterialParams matParams;
     matParams.diffuseOpacity = gMaterialDiffuseOpacity[pixelPos];
@@ -475,160 +122,280 @@ MaterialParams loadMaterialParams(uint2 pixelPos)
     matParams.extraParams = gMaterialExtraParams[pixelPos];
 
     return matParams;
+}*/
+
+/** Returns the primary ray's direction.
+*/
+/*float3 getPrimaryRayDir(uint2 launchIndex, uint2 launchDim, const Camera camera)
+{
+    if (isValid(gWorldView))
+    {
+        // If we have the view vector bound as a buffer, just fetch it. No need to compute anything.
+        return -gWorldView[launchIndex].xyz;
+    }
+    else
+    {
+        // Compute the view vector. This must exactly match what the G-buffer pass is doing (jitter etc.).
+        // Note that we do not take depth-of-field into account as it would require exactly matching the
+        // sample generator between the passes, which is error prone. The host side will issue a warning instead.
+        return camera.computeRayPinhole(launchIndex, launchDim).dir;
+    }
+}*/
+
+/** Traces a shadow ray towards a light source.
+    \param[in] origin Ray origin for the shadow ray.
+    \param[in] dir Direction from shading point towards the light source (normalized).
+    \param[in] distance Distance to the light source.
+    \return True if light is visible, false otherwise.
+*/
+/*bool traceShadowRay(float3 origin, float3 dir, float distance)
+{
+    RayDesc ray;
+    ray.Origin = origin;
+    ray.Direction = dir;
+    ray.TMin = 0.f;
+    ray.TMax = distance;
+
+    ShadowRayData rayData;
+    rayData.visible = false;    // Set to true by miss shader if ray is not terminated before
+    TraceRay(gRtScene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff /* instanceInclusionMask *//*, 1 /* hitIdx *//*, hitProgramCount, 1 /* missIdx *//*, ray, rayData);
+
+    return rayData.visible;
+}*/
+
+/** Traces a scatter ray based on ray parameters stored in the ray payload.
+    \param[in] rayData Describes the ray parameters. The struct is modified based on the result.
+*/
+/*void traceScatterRay(inout ScatterRayData rayData)
+{
+    RayDesc ray;
+    ray.Origin = rayData.origin;
+    ray.Direction = rayData.direction;
+    ray.TMin = 0.f;
+    ray.TMax = kRayTMax;
+
+    uint rayFlags = 0;      // TODO: Set cull mode from the app
+    TraceRay(gRtScene, rayFlags, 0xff /* instanceInclusionMask *//*, 0 /* hitIdx *//*, hitProgramCount, 0 /* missIdx *//*, ray, rayData);
+}*/
+
+/** Evaluates the direct illumination from analytic lights.
+    This function samples Falcor's light list uniformly with one shadow ray.
+    \param[in] sd Shading data.
+    \param[in] rayOrigin Ray origin for the shadow ray.
+    \param[in] sg SampleGenerator object.
+    \return Outgoing radiance in view direction.
+*/
+/*float3 evalDirectAnalytic(const ShadingData sd, float3 rayOrigin, inout SampleGenerator sg)
+{
+    const uint lightCount = gScene.getLightCount();
+    if (lightCount == 0) return float3(0);
+
+    // Pick one of the analytic light sources randomly with equal probability.
+    const uint lightIndex = min(uint(sampleNext1D(sg) * lightCount), lightCount - 1);
+    float invPdf = lightCount; // Light selection pdf = 1.0 / lightCount.
+
+    // Sample local light source.
+    AnalyticLightSample ls;
+    bool valid = sampleLight(rayOrigin, gScene.getLight(lightIndex), sg, ls);
+
+    // Reject sample if lower hemisphere.
+    if (!valid || dot(ls.dir, sd.N) <= kMinCosTheta) return float3(0);
+
+    // Test visibility by tracing a shadow ray.
+    bool V = traceShadowRay(rayOrigin, ls.dir, ls.distance);
+    return V ? evalBSDFCosine(sd, ls.dir) * ls.Li * invPdf : float3(0);
+}*/
+
+/** Processes a hit point to generate a scatter ray or terminate.
+    This function generates a cosine-weighted direction over the hemisphere.
+    \param[in] sd Shading data.
+    \param[in] rayOrigin Ray origin for the new ray.
+    \param[in] rayData Ray payload.
+*/
+/*void generateScatterRay(const ShadingData sd, float3 rayOrigin, inout ScatterRayData rayData)
+{
+    // Generate scatter ray as cosine-weighted direction over the hemisphere.
+    float pdf = 0.f;
+    float2 u = sampleNext2D(rayData.sg);
+    float3 wi = sample_cosine_hemisphere_concentric(u, pdf);
+    wi = fromLocal(wi, sd);
+
+    rayData.origin = rayOrigin;
+    rayData.direction = wi;
+    rayData.thp *= pdf > 0.f ? evalBSDFCosine(sd, wi) / pdf : float3(0);
+}*/
+
+/** ********************* Ray index 0: Scatter ray ************************ */
+
+[shader("miss")]
+void scatterMiss(inout ScatterRayData rayData : SV_RayPayload)
+{
+    // Ray missed the scene. Mark the ray as terminated.
+    rayData.terminated = true;
+
+    // Add contribution from distant light (env map) in this direction.
+    /*if (kUseEnvLight && (kComputeDirect || rayData.pathLength > 0))
+    {
+        float3 Le = gScene.envMap.eval(WorldRayDirection());
+        rayData.radiance += rayData.thp * Le;
+    }*/
 }
 
-struct SDTreeSample
+[shader("anyhit")]
+void scatterAnyHit(
+    uniform HitShaderParams hitParams,
+    inout ScatterRayData rayData : SV_RayPayload, BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes)
 {
-    float3 mOrigin;
-    float mPdf;
-    
-    float3 mRadiance;
-    uint mTreeIndex;
-    
-    float2 mDirection;
-    uint mNodeIndex;
-};
+    // Alpha test for non-opaque geometry.
+    VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
+    const uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
+    if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f))
+        IgnoreHit();
+}
 
-[shader("raygeneration")]
-void main()
+[shader("closesthit")]
+void scatterClosestHit(
+    uniform HitShaderParams hitParams,
+    inout ScatterRayData rayData : SV_RayPayload, BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes)
 {
-    const uint2 screenPos = DispatchRaysIndex().xy;
-    const uint2 screenSize = DispatchRaysDimensions().xy;
-    
-    const float3 absPos = gWorldPos[screenPos].xyz;
- 
-    float3 primaryRayDir = gScene.camera.computeRayPinhole(screenPos, screenSize).dir;
+    // Evaluate Falcor's material parameters at the hit point.
+    // TODO: Implement texLOD to enable texture filtering in prepareShadingData().
+    VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
+    const uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
+    ShadingData sd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -WorldRayDirection(), 0.f);
 
-    float3 normal = gShadingNormal[screenPos].xyz;
-    float4 tangent = float4(perp_stark(normal), 1);
-    float3 geoNormal = gGeometricNormal[screenPos].xyz;
-    GeometryParams geoParams = prepareGeometryParams(absPos.xyz, -primaryRayDir, normal, tangent, geoNormal);
-
-    // Load material parameters from G-buffer
-    MaterialParams matParams = loadMaterialParams(screenPos);
-
-    // Prepare shading data struct
-    ShadingData sd = prepareShadingData(geoParams, matParams);
-
-    float4 sampleDataPos = float4(0.f);
-    float4 sampleDataRadiance = float4(0.f);
-    float4 sampleDataDir = float4(0.f, 0.f, -1.f, 0.f);
-    
-    float3 cameraContribution = float3(0.f, 0.f, 0.f);
-    
-    if (gWorldPos[screenPos].w != 0)
+    // Add emitted light.
+    /*if (kUseEmissiveLights && (kComputeDirect || rayData.pathLength > 0))
     {
-        ScatterRayPayload payload = { };
-        payload.mSampleGenerator = SampleGenerator.create(screenPos, gFrameIndex);
+        rayData.radiance += rayData.thp * sd.emissive;
+    }
 
-        for (int i = 0; i < 2; i++) // TODO test
-            sampleNext2D(payload.mSampleGenerator);
-        //SampleGenerator sg = SampleGenerator.create(screenPos, gFrameIndex);
-        //float3 relPos = absPos - gSceneMin;
-            HemisphereSample nextSample = sampleSTree(absPos, payload.mSampleGenerator);
-        float3 sampleDir = nextSample.getSampleAsDir();
-        float pdf = nextSample.pdf;
-        //float3 toCamera = float3(0.f); // TODO init to direction of shading point to camera
-        
-        RayDesc ray = { };
-        ray.Origin = absPos;
-        ray.Direction = sampleDir;
-        ray.TMin = 1e-3f; // Maybe change
-        ray.TMax = kRayTMax; // kRayTMax is defined somewhere
-        //ScatterRayPayload payload = { };
-        payload.mLTotal = sd.emissive;
-        payload.mThrouhgput = evalBSDFCosine(sd, sampleDir) * rcp(pdf);
-        payload.mNextSampleDir = sampleDir;
-        payload.mNextSampleOrigin = absPos;
-        payload.mSamplePdf = pdf;
-        payload.mEvalEmissive = 0;
-        //payload.mSampleGenerator = gSampleGenerator;
-        //payload.mPackedHitInfoData = HitInfo::kInvalidIndex;
-        
-        //TraceRay(gRtScene, RAY_FLAG_NONE, 0xff, 0, hitProgramCount, 0, ray, payload);
+    // Check whether to terminate based on max depth.
+    if (rayData.pathLength >= kMaxBounces)
+    {
+        rayData.terminated = true;
+        return;
+    }
 
-        const uint kMaxBounces = 3; // warining: waaaaay too large
-        bool keepGoing = true;
-        uint i = 0;
-        float3 pathPrefixThroughput = payload.mThrouhgput;
-        float3 pathPrefixLTotal = payload.mLTotal;
-        float3 pathPrefixDir = payload.mNextSampleDir;
-        float3 pathPrefixOrigin = payload.mNextSampleOrigin;
-        float pathPrefixPdf = payload.mSamplePdf;
-        payload.mThrouhgput = float3(1.f);
-        payload.mLTotal = float3(0.f);
+    // Compute ray origin for new rays spawned from the hit.
+    float3 rayOrigin = sd.computeNewRayOrigin();
 
-        uint pathIndex = sampleNext1D(payload.mSampleGenerator) * kMaxBounces;
-        pathIndex = max(pathIndex, kMaxBounces - 1); // should not ever happen
-        //pathIndex = 0;
-        
-        while (keepGoing)
+    // Add contribution of direct light from analytic lights.
+    if (kUseAnalyticLights)
+    {
+        float3 Lr = evalDirectAnalytic(sd, rayOrigin, rayData.sg);
+        rayData.radiance += rayData.thp * Lr;
+    }
+
+    // Generate scatter ray for the next path segment.
+    // The raygen shader will continue the path based on the returned payload.
+    //generateScatterRay(sd, rayOrigin, rayData);
+
+    rayData.pathLength++;*/
+}
+
+/************************** Ray index 1: Shadow ray ************************ */
+
+[shader("miss")]
+void shadowMiss(inout ShadowRayData rayData : SV_RayPayload)
+{
+    // The miss shader is executed if the ray misses all geometry. Mark as visible.
+    rayData.visible = true;
+}
+
+[shader("anyhit")]
+void shadowAnyHit(
+    uniform HitShaderParams hitParams,
+    inout ShadowRayData rayData : SV_RayPayload, BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes)
+{
+    // Alpha test for non-opaque geometry.
+    VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
+    const uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
+    if (alphaTest(v, gScene.materials[materialID], gScene.materialResources[materialID], 0.f))
+        IgnoreHit();
+}
+
+/** ******************************** RayGen ******************************** */
+
+/** This is the entry point for the minimal path tracer.
+
+    One path per pixel is generated, which is traced into the scene.
+    The path tracer is written as a for-loop over path segments.
+
+    Built-in light sources (point, directional) are sampled explicitly at each
+    path vertex. The contributions from area lights (env map and mesh lights)
+    are explicitly added by the scatter ray hit/miss shaders.
+*/
+[shader("raygeneration")]
+void rayGen()
+{
+    /*uint2 launchIndex = DispatchRaysIndex().xy;
+    uint2 launchDim = DispatchRaysDimensions().xy;
+
+    float3 outColor = float3(0, 0, 0);
+
+    const float3 rayDir = getPrimaryRayDir(launchIndex, launchDim, gScene.camera);
+    const float4 worldPos = gWorldPosition[launchIndex];
+
+    if (worldPos.w != 0.f)  // Using w to indicate valid geometry for now
+    {
+        // Pixel represents a valid primary hit. Compute its contribution.
+
+        // Load geometry parameters from G-buffer.
+        // TODO: Load (u,v) channel if it exists.
+        float3 normal = gWorldShadingNormal[launchIndex].xyz;
+        float4 tangent = isValid(gWorldShadingTangent) ? gWorldShadingTangent[launchIndex] : float4(perp_stark(normal), 1.f);
+        float3 faceNormal = gWorldFaceNormal[launchIndex].xyz;
+        GeometryParams geoParams = prepareGeometryParams(worldPos.xyz, -rayDir, normal, tangent, faceNormal);
+
+        // Load material parameters from G-buffer.
+        MaterialParams matParams = loadMaterialParams(launchIndex);
+
+        // Prepare ShadingData struct.
+        ShadingData sd = prepareShadingData(geoParams, matParams);
+
+        // Create sample generator.
+        SampleGenerator sg = SampleGenerator.create(launchIndex, gFrameCount);
+
+        // Advance the generator to the first available dimension.
+        // TODO: This is potentially expensive. We may want to store/restore the state from memory if it becomes a problem.
+        for (uint i = 0; i < gPRNGDimension; i++) sampleNext1D(sg);
+
+        // Compute ray origin for new rays spawned from the G-buffer.
+        const float3 rayOrigin = sd.computeNewRayOrigin();
+
+        if (kComputeDirect)
         {
-            if (i == pathIndex)
-            {
-                pathPrefixLTotal += pathPrefixThroughput * payload.mLTotal;
-                pathPrefixThroughput *= payload.mThrouhgput;
-                pathPrefixDir = payload.mNextSampleDir;
-                pathPrefixOrigin = payload.mNextSampleOrigin;
-                pathPrefixPdf = payload.mSamplePdf;
-                payload.mThrouhgput = float3(1.f);
-                payload.mLTotal = float3(0.f);
-            }
-            
-            ray = { };
-            ray.Origin = payload.mNextSampleOrigin;
-            ray.Direction = payload.mNextSampleDir;
-            ray.TMin = 1e-3f;
-            ray.TMax = kRayTMax;
+            // Always output directly emitted light, independent of whether emissive materials are treated as light sources or not.
+            outColor += sd.emissive;
 
-            payload.mNextSampleDir = float3(0.f, 0.f, 0.f);
-
-            TraceRay(gRtScene, RAY_FLAG_NONE, 0xff, 0, hitProgramCount, 0, ray, payload);
-            
-            keepGoing = (i++ < (kMaxBounces - 1)) && any(payload.mNextSampleDir != 0.f);
+            // Add contribution of direct light from analytic lights.
+            // Light probe and mesh lights are handled by the scatter ray hit/miss shaders.
+            outColor += kUseAnalyticLights ? evalDirectAnalytic(sd, rayOrigin, sg) : float3(0, 0, 0);
         }
 
-        
-        // always interpret a hit, even if ray missed everything
-        //HitInfo hit;
-        //hit.decode(payload.mPackedHitInfoData);
-        //const uint materialID = gScene.getMaterialID(hit.meshInstanceID);
-        //StaticVertexData svd[3];
-        //VertexData vertexData = gScene.getVertexData(hit, svd);
+        // Prepare ray payload.
+        ScatterRayData rayData = ScatterRayData.create(sg);
 
-        //RayFootprint rfp = { }; // assumes no ray footprint
+        // Generate scatter ray.
+        generateScatterRay(sd, rayOrigin, rayData);
 
-        //ShadingData sd_emissive = prepareShadingData(vertexData, rfp, svd, hit, absPos, normalize(sampleDir)); // is fucked
-    
-        //ShadingData sd_emissive = prepareShadingData(vertexData, materialID, gScene.materials[materialID],
-        //    gScene.materialResources[materialID], -sampleDir, 0.f);
-    
-        
+        // Follow path into the scene and compute its total contribution.
+        for (uint depth = 0; depth <= kMaxBounces && !rayData.terminated; depth++)
+        {
+            // Trace scatter ray. If it hits geometry, the closest hit shader samples
+            // direct illumination and generates the next scatter ray.
+            traceScatterRay(rayData);
+        }
 
-        //float3 emissive = sd.emissive;
-        //float3 brdf = evalBSDFCosine(sd, sampleDir); // eval brdf*cos of camera point
-        ////float3 test = emissive + brdf * payload.mEmissive * rcp(pdf);
-        ////float3 test = isfinite(payload.mEmissive) ? 1 : 0;
-        // bool validHit = any(payload.mNextSampleDir != float3(0.f)); // hits are always valid!!
-        //cameraContribution = validHit ? emissive + brdf * payload.mEmissive * rcp(pdf) : emissive;
-        cameraContribution = pathPrefixLTotal + pathPrefixThroughput * payload.mLTotal;
-        ////cameraContribution = validHit ? emissive + brdf * sd_emissive.emissive * rcp(pdf) : emissive;
-
-        sampleDataPos = /*validHit ?*/ float4(pathPrefixOrigin, 0.f) /*: float4(0.f)*/;
-        sampleDataRadiance = /*validHit ?*/ float4(payload.mLTotal, 0.f) /*: float4(0.f)*/;
-        //sampleDataRadiance = validHit ? float4(sd_emissive.emissive, 0.f) : float4(0.f);
-        sampleDataDir = /*validHit ?*/ float4(dirToCanonical(pathPrefixDir), pathPrefixPdf, 0.f) /*: float4(0.f, 0.f, -1.f, 0.f)*/;
-        
+        // Store contribution from scatter ray.
+        outColor += rayData.radiance;
     }
-    //AllMemoryBarrier();
-    //gSamplePos[screenPos] = float4(relPos, 0.f);
-    //gSampleRadiance[screenPos] = float4(payload.mEmissive, 0.f);
-    //gSamplePdf[screenPos] = float4(dirToCanonical(sampleDir), pdf, 0.f);
-    
-    gSamplePos[screenPos] = sampleDataPos;
-    gSampleRadiance[screenPos] = sampleDataRadiance;
-    gSamplePdf[screenPos] = sampleDataDir;
+    else
+    {
+        // Background pixel.
+        outColor = kUseEnvBackground ? gScene.envMap.eval(rayDir) : kDefaultBackgroundColor;
+    }
 
-    gOutputColor[screenPos] = float4(cameraContribution, 1.f);
-    //AllMemoryBarrier();
+    gOutputColor[launchIndex] = float4(outColor, 1);*/
 }
