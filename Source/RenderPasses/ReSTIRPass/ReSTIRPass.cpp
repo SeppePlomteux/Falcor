@@ -270,7 +270,7 @@ void ReSTIRPass::executeSamplingPass(RenderContext* pRenderContext, const Render
     if (mUseEmissiveSampler)
     {
         assert(mpEmissiveSampler);
-        if (mpEmissiveSampler->prepareProgram(mGenerationProgram.pProgram.get()))
+        if (mGenerationProgram.pProgram->addDefines(mpEmissiveSampler->getDefines()))
             mGenerationProgram.pVars = nullptr;
     }
 
