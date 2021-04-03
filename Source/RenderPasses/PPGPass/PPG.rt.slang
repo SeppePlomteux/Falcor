@@ -13,10 +13,11 @@ import RenderPasses.Shared.PathTracer.PathTracerHelpers;*/
 
 import Experimental.Scene.Material.MaterialShading;
 import Utils.Math.MathHelpers;
+import Utils.Sampling.SampleGenerator;
 import RenderPasses.Shared.PathTracer.PathTracerHelpers;
-import Scene.Scene;
+//import Scene.Scene;
 import Scene.Raytracing; // contains HitShaderParams
-import Scene.HitInfo;
+//import Scene.HitInfo;
 import RenderPasses.Shared.PathTracer.RayFootprint;
 
 Texture2D<float4> gDTreeSums;
