@@ -36,7 +36,7 @@ extern "C" __declspec(dllexport) const char* getProjDir()
 
 extern "C" __declspec(dllexport) void getPasses(Falcor::RenderPassLibrary & lib)
 {
-    lib.registerClass("MinimalPathTracer", "Minimal path tracer", PPGPass::create);
+    lib.registerClass("PPGPass", "Practical Path Guiding", PPGPass::create);
 }
 
 namespace
