@@ -27,125 +27,88 @@
  **************************************************************************/
 #pragma once
 #include "Falcor.h"
-#include "FalcorExperimental.h"
-//#include "SDTree.h"
-#include "STreeStump.h"
-#include "RenderPasses/Shared/PathTracer/PathTracer.h"
-
-#include <mutex>
+#include "Utils/Sampling/SampleGenerator.h"
 
 using namespace Falcor;
 
-class PPGPass : public PathTracer
+/** Minimal path tracer.
+
+    This pass implements a minimal brute-force path tracer. It does purposely
+    not use any importance sampling or other variance reduction techniques.
+    The output is unbiased/consistent ground truth images, against which other
+    renderers can be validated.
+
+    Note that transmission and nested dielectrics are not yet supported.
+*/
+class PPGPass : public RenderPass
 {
 public:
     using SharedPtr = std::shared_ptr<PPGPass>;
 
-    struct TreeInfoTasks
-    {
-        //std::function<std::vector<uint8_t>(void)> mpReadPosTask;
-        //std::function<std::vector<uint8_t>(void)> mpReadRadianceTask;
-        //std::function<std::vector<uint8_t>(void)> mpReadSamplePdfTask;
-
-        std::vector<uint8_t> mpReadPosTask;
-        std::vector<uint8_t> mpReadRadianceTask;
-        std::vector<uint8_t> mpReadSamplePdfTask;
-
-        float3 mSceneSize; // save here because this can change over time
-    };
-
-    /** Create a new render pass object.
-        \param[in] pRenderContext The render context.
-        \param[in] dict Dictionary of serialized parameters.
-        \return A new object, or an exception is thrown if creation failed.
-    */
     static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
 
-    virtual std::string getDesc() override { return "Insert pass description here"; }
+    virtual std::string getDesc() override
+    {
+        return "Minimal path tracer";
+    }
     virtual Dictionary getScriptingDictionary() override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
-    virtual void compile(RenderContext* pContext, const CompileData& compileData) override {}
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
     virtual void setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene) override;
-    virtual bool onMouseEvent(const MouseEvent& mouseEvent) override { return false; }
-    virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override { return false; }
-
-    void updateSDTree(std::shared_ptr<TreeInfoTasks> tasks);
-
+    virtual bool onMouseEvent(const MouseEvent& mouseEvent) override
+    {
+        return false;
+    }
+    virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override
+    {
+        return false;
+    }
 
 private:
     PPGPass(const Dictionary& dict);
+    void prepareVars();
 
-    void updateTreeTextures(RenderContext* pRenderContext);
+    // Internal state
+    Scene::SharedPtr            mpScene;                    ///< Current scene.
+    SampleGenerator::SharedPtr  mpSampleGenerator;          ///< GPU sample generator.
 
-    void resetStatisticalWeight(RenderContext* pRenderContext);
-    void rescaleTree(RenderContext* pRenderContext);
-    void splatIntoTree(RenderContext* pRenderContext, uint2 screenSize);
-    void propagateTreeSums(RenderContext* pRenderContext);
-    void updateTree(RenderContext* pRenderContext, std::vector<uint8_t>& statWeightVec);
+    // Configuration
+    uint                        mMaxBounces = 3;            ///< Max number of indirect bounces (0 = none).
+    bool                        mComputeDirect = true;      ///< Compute direct illumination (otherwise indirect only).
 
+    // Runtime data
+    uint                        mFrameCount = 0;            ///< Frame count since scene was loaded.
+    bool                        mOptionsChanged = false;
 
-    //size_t mCurrentSamplesPerPixel = 0;
-    //size_t mMaxSamplesPerPixel = 1;
-
-    volatile bool mCurrentlyUpdatingTree = false;
-
-    RtProgram::SharedPtr mpPPGProg;
-    RtProgramVars::SharedPtr mpPPGVars;
-    ParameterBlock::SharedPtr mpPPGParamBlock;
-
+    // Ray tracing program.
     struct
     {
-        // Two dimentional textures
-        Texture::SharedPtr pSTreeTex;
-        Texture::SharedPtr pDTreeSumsTex;
-        Texture::SharedPtr pDTreeChildrenTex;
-        Texture::SharedPtr pDTreeParentTex;
-        // One dimentional textures
-        Texture::SharedPtr pDTreeSizeTex;
-        Texture::SharedPtr pDTreeStatisticalWeightTex;
-    } mTreeTextures;
+        RtProgram::SharedPtr pProgram;
+        RtProgramVars::SharedPtr pVars;
+    } mTracer;
 
-    /*struct
+    // Scripting
+#define serialize(var) \
+    if constexpr (!loadFromDict) dict[#var] = var; \
+    else if (dict.keyExists(#var)) { if constexpr (std::is_same<decltype(var), std::string>::value) var = (const std::string &)dict[#var]; else var = dict[#var]; vars.emplace(#var); }
+
+    template<bool loadFromDict, typename DictType>
+    void serializePass(DictType& dict)
     {
-        Texture::SharedPtr pDTreeSumsTex;
-        Texture::SharedPtr pDTreeChildrenTex;
-        Texture::SharedPtr pDTreeStatisticalWeightTex;
-        Texture::SharedPtr pDTreeMutex;
-    } mBuildingTreeTextures;*/
+        std::unordered_set<std::string> vars;
 
-    struct
-    {
-        Texture::SharedPtr pPosTex;
-        Texture::SharedPtr pRadianceTex;
-        Texture::SharedPtr pDirPdfTex;
-    } mSampleResultTextures;
+        // Add variables here that should be serialized to/from the dictionary.
+        serialize(mMaxBounces);
+        serialize(mComputeDirect);
 
-    //STree::SharedPtr mpTree;
-    STreeStump::SharedPtr mpTree;
-
-    //std::unique_ptr<std::thread> mpWorkingThread; // If Falcor exits, unique pointer ensures that working thread is stopped
-
-    struct
-    {
-        ComputePass::SharedPtr pBlitDTreePass;
-        ComputePass::SharedPtr pBlitSTreePass;
-
-        ComputePass::SharedPtr pResetStatisticalWeightPass;
-        ComputePass::SharedPtr pRescaleDTreePass;
-        ComputePass::SharedPtr pSplatIntoSDTreePass;
-        ComputePass::SharedPtr pPropagateDTreeSumsPass;
-        ComputePass::SharedPtr pUpdateDTreeStructurePass;
-        ComputePass::SharedPtr pCompressDTreePass;
-        ComputePass::SharedPtr pCompressSTreePass;
-        ComputePass::SharedPtr pCopySingleDTreePass;
-    } mSDTreeUpdatePasses;
-
-    //ComputePass::SharedPtr mpResetStatisticalWeightPass;
-    //ComputePass::SharedPtr mpResetMutexPass;
-    //ComputePass::SharedPtr mpSplatIntoSDTreePass;
-
-    //void rebuildTree();
-    //void updateDTreeBuilding(DTreeTexData data);
+        if constexpr (loadFromDict)
+        {
+            for (const auto& [key, value] : dict)
+            {
+                if (vars.find(key) == vars.end()) logWarning("Unknown field '" + key + "' in a PathTracer dictionary");
+            }
+        }
+    }
+#undef serialize
 };

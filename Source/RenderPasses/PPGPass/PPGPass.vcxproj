@@ -40,6 +40,7 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ShaderSource Include="..\MinimalPathTracer\MinimalPathTracer.rt.slang" />
     <ShaderSource Include="BlitDTreeTex.cs.hlsl" />
     <ShaderSource Include="BlitSTreeTex.cs.hlsl" />
     <ShaderSource Include="BuildDTree.cs.hlsl" />
