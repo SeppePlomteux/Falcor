@@ -388,7 +388,7 @@ void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
     if (mUseEmissiveSampler)
     {
         assert(mpEmissiveSampler);
-        if (mpEmissiveSampler->prepareProgram(mpPPGProg.get()))
+        if (mpPPGProg->addDefines(mpEmissiveSampler->getDefines()))
             mpPPGVars = nullptr;
     }
 
@@ -734,16 +734,15 @@ void PPGPass::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pS
     mpPPGProg->setDefines(pScene->getSceneDefines());
 
     const auto& kaas = pScene->getSceneBounds();
-
-    std::cout << "Scene min: " << kaas.getMinPos().x << ", " << kaas.getMinPos().y << ", " << kaas.getMinPos().z << std::endl;
-    std::cout << "Scene max: " << kaas.getMaxPos().x << ", " << kaas.getMaxPos().y << ", " << kaas.getMaxPos().z << std::endl;
+    std::cout << "Scene min: " << kaas.minPoint.x << ", " << kaas.minPoint.y << ", " << kaas.minPoint.z << std::endl;
+    std::cout << "Scene max: " << kaas.maxPoint.x << ", " << kaas.maxPoint.y << ", " << kaas.maxPoint.z << std::endl;
 
     const auto& aabb_falcor = pScene->getSceneBounds();
-    float3 delta = aabb_falcor.getSize() * 0.1f;
+    float3 delta = aabb_falcor.extent() * 0.1f;
     mpTree = STreeStump::SharedPtr(new STreeStump(
         float2(kSTreeSplitTresHold, kSTreeMergeTresHold),
         kSTreeStatWeightFactor,
-        AABB(aabb_falcor.getMinPos() - delta, aabb_falcor.getMaxPos() + delta))
+        MyAABB(aabb_falcor.minPoint - delta, aabb_falcor.maxPoint + delta))
     );
     //mpTree = STree::SharedPtr(new STree(AABB(aabb_falcor.getMinPos() - delta, aabb_falcor.getMaxPos() + delta)));
 }

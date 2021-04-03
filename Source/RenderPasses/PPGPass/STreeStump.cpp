@@ -18,13 +18,13 @@ bool STreeStumpNode::canBeMerged(STreeStump& tree, float tresHold)
     return res;
 }
 
-AABB::AABB(float3 min, float3 max)
+MyAABB::MyAABB(float3 min, float3 max)
 {
     mMin = min;
     mMax = max;
 }
 
-inline float3 AABB::getExtents() const
+inline float3 MyAABB::getExtents() const
 {
     return mMax - mMin;
 }
@@ -36,7 +36,7 @@ bool STreeStumpNode::canBeSplit(STreeStump& tree, float tresHold)
     return mStatisticalWeight >= tresHold;
 }
 
-STreeStump::STreeStump(float2 tresHolds, float factor, AABB aabb) : mSplitTresHold(tresHolds.x), mMergeTresHold(tresHolds.y), mAABB(aabb)
+STreeStump::STreeStump(float2 tresHolds, float factor, MyAABB aabb) : mSplitTresHold(tresHolds.x), mMergeTresHold(tresHolds.y), mAABB(aabb)
 {
     mNodes.emplace_back(STreeStumpNode());
     mNewDTreeIndex = 1;
@@ -58,7 +58,7 @@ uint STreeStump::getEstimatedAmountOfDTrees() const
     return mNewDTreeIndex;
 }
 
-const AABB& STreeStump::getAABB() const
+const MyAABB& STreeStump::getAABB() const
 {
     return mAABB;
 }

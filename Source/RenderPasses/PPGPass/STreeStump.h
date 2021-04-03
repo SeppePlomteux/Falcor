@@ -48,9 +48,9 @@ struct STreeChangeData
     DTreeCopyData mDTreeCopyData;
 };
 
-struct AABB
+struct MyAABB
 {
-    AABB(float3 min, float3 max);
+    MyAABB(float3 min, float3 max);
     inline float3 getExtents() const;
 
     float3 mMin;
@@ -62,7 +62,7 @@ class STreeStump
 public:
     using SharedPtr = std::shared_ptr<STreeStump>;
 
-    STreeStump(float2 tresHolds, float weightFactor, AABB aabb);
+    STreeStump(float2 tresHolds, float weightFactor, MyAABB aabb);
 
     void splitNode(STreeChangeData& res, const uint highIndex);
     /*
@@ -78,7 +78,7 @@ public:
 
     uint getEstimatedSTreeSize() const;
     uint getEstimatedAmountOfDTrees() const;
-    const AABB& getAABB() const;
+    const MyAABB& getAABB() const;
 
     STreeStumpNode& getNodeAt(uint index);
 private:
@@ -86,7 +86,7 @@ private:
     uint getNewDTreeIndex();
     uint getNewSTreeIndex();
 
-    AABB mAABB;
+    MyAABB mAABB;
 
     std::vector<STreeStumpNode> mNodes;
     std::vector<uint> mFreeDTreeIndices;
