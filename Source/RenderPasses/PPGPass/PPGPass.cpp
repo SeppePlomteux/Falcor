@@ -114,10 +114,9 @@ namespace
 PPGPass::PPGPass(const Dictionary& dict) : PathTracer(dict, kOutputChannels)
 {
     RtProgram::Desc description;
-    description.addShaderLibrary("RenderPasses/PPGPass/PPG.rt.slang");
+    description.addShaderLibrary("RenderPasses/PPGPass/PPG.rt.slang").setRayGen("main");
     description.addHitGroup(0, "scatterRayClosestHit", "scatterRayAnyHit").addMiss(0, "scatterRayMiss");
     description.addHitGroup(1, "", "shadowRayAnyHit").addMiss(1, "shadowRayMiss");
-    description.addRayGen("main");
     description.setMaxTraceRecursionDepth(kMaxRecursionDepth);
     mpPPGProg = RtProgram::create(description, kMaxPayloadSize, kMaxAttributeSize);
 
