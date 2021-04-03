@@ -1,0 +1,28 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="PPGPass.cpp" />
+    <ClCompile Include="SDTree.cpp" />
+    <ClCompile Include="STreeStump.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="PPGPass.h" />
+    <ClInclude Include="SDTree.h" />
+    <ClInclude Include="STreeStump.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ShaderSource Include="PPG.rt.slang" />
+    <ShaderSource Include="fuckingdebiel.slang" />
+    <ShaderSource Include="SplatIntoSDTree.cs.hlsl" />
+    <ShaderSource Include="ResetStatisticalWeightTex.cs.hlsl" />
+    <ShaderSource Include="ResetMutexTex.cs.hlsl" />
+    <ShaderSource Include="CopyDTreeTexRows.cs.hlsl" />
+    <ShaderSource Include="CompressDTreeTex.cs.hlsl" />
+    <ShaderSource Include="CompressSTreeTex.cs.hlsl" />
+    <ShaderSource Include="RescaleDTreeSums.cs.hlsl" />
+    <ShaderSource Include="PropagateDTreeSums.cs.hlsl" />
+    <ShaderSource Include="BuildDTree.cs.hlsl" />
+    <ShaderSource Include="BlitDTreeTex.cs.hlsl" />
+    <ShaderSource Include="BlitSTreeTex.cs.hlsl" />
+  </ItemGroup>
+</Project>
