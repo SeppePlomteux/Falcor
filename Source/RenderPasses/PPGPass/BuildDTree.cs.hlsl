@@ -14,11 +14,12 @@ RWTexture2D<uint2> gDTreeChildren;
 RWTexture2D<uint> gDTreeParent;
 RWTexture1D<uint> gDTreeSize;
 
+Texture1D<uint> gSTreeMetaData;
+
 RWTexture1D<uint> gFreedNodes;
 
 cbuffer BuildBuf
 {
-    uint gAmountOfDTrees;
     uint gFrameIndex;
 };
 
@@ -157,6 +158,7 @@ uint removeDTreeCell(DTreeNode rootNode, SampleGenerator sg)
         {
             rootNode.setChildIndex(relIndex, 0);
             rootNode.writeChildDataToTextures();
+            gDTreeSize[rootNode.getTreeIndex()]--;
             return absIndex;
         }
 
@@ -225,14 +227,14 @@ void addDTreeCell(DTreeNode rootNode, SampleGenerator sg)
 [numthreads(32, 1, 1)]
 void main( uint3 DTid : SV_DispatchThreadID )
 {
-    if (DTid.x >= gAmountOfDTrees)
+    if (DTid.x >= gSTreeMetaData[1])
         return;
 
     SampleGenerator sg = SampleGenerator.create(DTid.xy, gFrameIndex);
     for (int i = 0; i < 2; i++)
         sampleNext3D(sg);
     
-    DTreeNode root = buildDTreeNode(DTid.x, 0);
+    DTreeNode root = buildDTreeNode(0, DTid.x);
 
     gFreedNodes[DTid.x] = removeDTreeCell(root, sg);
 

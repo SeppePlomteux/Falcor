@@ -1,5 +1,4 @@
-
-RWTexture1D<uint> gDTreeStatisticalWeight;
+RWTexture1D<uint> gFreedNodes;
 
 cbuffer ResetBuf
 {
@@ -11,5 +10,6 @@ void main( uint3 DTid : SV_DispatchThreadID )
 {
     if (DTid.x >= gTexSize)
         return;
-    gDTreeStatisticalWeight[DTid.x] = 0U;
+
+    gFreedNodes[DTid.x] = 0.f;
 }

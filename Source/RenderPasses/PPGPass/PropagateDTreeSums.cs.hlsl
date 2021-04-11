@@ -6,11 +6,7 @@ Texture2D<uint2> gDTreeChildren;
 Texture2D<uint> gDTreeParent;
 
 Texture1D<uint> gDTreeSize;
-
-cbuffer PropagateBuf
-{
-    uint2 gRelevantTexSize;
-};
+Texture1D<uint> gSTreeMetaData;
 
 struct DTreeNode
 {
@@ -91,9 +87,9 @@ bool nodeAllowedToContinue(DTreeNode node, uint oldNodeIndex)
 [numthreads(32, 1, 1)]
 void main( uint3 DTid : SV_DispatchThreadID )
 {
-    if (any(DTid.xy >= gRelevantTexSize))
+    if (DTid.y >= gSTreeMetaData[1])
         return;
-
+    
     if (DTid.x >= gDTreeSize[DTid.y])
         return;
     

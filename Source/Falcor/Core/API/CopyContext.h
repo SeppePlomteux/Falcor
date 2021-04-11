@@ -129,6 +129,8 @@ namespace Falcor
         */
         ReadTextureTask::SharedPtr asyncReadTextureSubresource(const Texture* pTexture, uint32_t subresourceIndex);
 
+        std::function<std::vector<uint8_t>(void)> getReadTextureSubresourceThunk(const Texture* pTexture, uint32_t subresourceIndex);
+
         /** Get the low-level context data
         */
         virtual const LowLevelContextData::SharedPtr& getLowLevelData() const { return mpLowLevelData; }

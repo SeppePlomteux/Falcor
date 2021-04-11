@@ -79,6 +79,16 @@ namespace Falcor
         return pTask->getData();
     }
 
+    std::function<std::vector<uint8_t>(void)> CopyContext::getReadTextureSubresourceThunk(const Texture* pTexture, uint32_t subresourceIndex)
+    {
+        //CopyContext::ReadTextureTask::SharedPtr pTask = asyncReadTextureSubresource(pTexture, subresourceIndex);
+        return [this, pTexture, subresourceIndex]() -> std::vector<uint8_t>
+        {
+            return readTextureSubresource(pTexture, subresourceIndex);
+            //return pTask->getData();
+        };
+    }
+
     bool CopyContext::resourceBarrier(const Resource* pResource, Resource::State newState, const ResourceViewInfo* pViewInfo)
     {
         const Texture* pTexture = dynamic_cast<const Texture*>(pResource);

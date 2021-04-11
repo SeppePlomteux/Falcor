@@ -9,10 +9,7 @@ RWTexture2D<uint> gDTreeParent;
 
 RWTexture1D<uint> gDTreeSize;
 
-cbuffer CompressBuf
-{
-    uint2 gRelevantTexSize;
-};
+Texture1D<uint> gSTreeMetaData;
 
 uint4 getChildren(uint2 texelPos)
 {
@@ -52,7 +49,9 @@ void storeParents(uint2 parents, uint2 texelPos)
 [numthreads(32, 1, 1)]
 void main( uint3 DTid : SV_DispatchThreadID )
 {
-    if (any(DTid.xy >= gRelevantTexSize))
+    if (DTid.y >= gSTreeMetaData[1])
+        return;
+    if (DTid.x >= gDTreeSize[DTid.y] + 1)
         return;
 
     uint freedNodes = gFreedNodes[DTid.y];

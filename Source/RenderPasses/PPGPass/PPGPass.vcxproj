@@ -43,16 +43,23 @@
     <ShaderSource Include="BlitDTreeTex.cs.hlsl" />
     <ShaderSource Include="BlitSTreeTex.cs.hlsl" />
     <ShaderSource Include="BuildDTree.cs.hlsl" />
+    <ShaderSource Include="BuildSTree.cs.hlsl" />
     <ShaderSource Include="CompressDTreeTex.cs.hlsl" />
     <ShaderSource Include="CompressSTreeTex.cs.hlsl" />
     <ShaderSource Include="CopyDTreeTexRows.cs.hlsl" />
     <ShaderSource Include="fuckingdebiel.slang" />
     <ShaderSource Include="PPG.rt.slang" />
     <ShaderSource Include="PropagateDTreeSums.cs.hlsl" />
+    <ShaderSource Include="ResetFreedNodesTex.cs.hlsl" />
+    <ShaderSource Include="UpdateSTreeStatWeight.cs.hlsl" />
     <ShaderSource Include="RescaleDTreeSums.cs.hlsl" />
+    <ShaderSource Include="RescaleSTreeStatWeight.cs.hlsl" />
     <ShaderSource Include="ResetMutexTex.cs.hlsl" />
     <ShaderSource Include="ResetStatisticalWeightTex.cs.hlsl" />
     <ShaderSource Include="SplatIntoSDTree.cs.hlsl" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="CompressDTreeTexRows.cs.hlsl" />
   </ItemGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>

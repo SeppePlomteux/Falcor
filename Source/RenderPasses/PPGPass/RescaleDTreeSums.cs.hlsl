@@ -2,15 +2,12 @@
 
 RWTexture2D<float4> gDTreeSums;
 
-cbuffer RescaleBuf
-{
-    uint2 gRelevantTexSize;
-};
+Texture1D<uint> gSTreeMetaData;
 
 [numthreads(8, 4, 1)]
 void main( uint3 DTid : SV_DispatchThreadID )
 {
-    if (any(DTid.xy >= gRelevantTexSize))
+    if (DTid.y >= gSTreeMetaData[1])
         return;
 
     gDTreeSums[DTid.xy] *= K_SCALE_FACTOR;

@@ -52,10 +52,10 @@ namespace
 
     //int kMaxAvailableThreads =  std::thread::hardware_concurrency() - 1; // leave out one thread for main loop
 
-    const uint kSTreeTexWidth = 300;
+    const uint kSTreeTexWidth = 1024;
+    const uint kSTreeTexHeight = 1024;
     const uint kDTreeTexWidth = 600;
-
-    const uint kSDTreeTexIncrementHeight = 100;
+    const uint kDTreeTexHeight = 2048;
 
     ResourceBindFlags kDefaultBindFlags = ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess;
 
@@ -82,33 +82,21 @@ namespace
 
     const struct
     {
+        const TextureDesc kSTreeMetaData = { "gSTreeMetaData", ResourceFormat::R32Uint };
         const TextureDesc kSTreeData = { "gSTreeData", ResourceFormat::RGBA32Uint };
+        const TextureDesc kSTreeStatWeight = { "gSTreeStatWeight", ResourceFormat::R32Float };
         const TextureDesc kDTreeSums = { "gDTreeSums", ResourceFormat::RGBA32Float };
         const TextureDesc kDTreeChildren = { "gDTreeChildren", ResourceFormat::RG32Uint };
         const TextureDesc kDTreeParent = { "gDTreeParent", ResourceFormat::R32Uint};
 
         const TextureDesc kDTreeSize = { "gDTreeSize", ResourceFormat::R32Uint };
         const TextureDesc kDTreeStatisticalWeight = { "gDTreeStatisticalWeight", ResourceFormat::R32Uint };
-
-        //const TextureDesc kDTreeBuildingSums = { "gDTreeBuildingSums", ResourceFormat::RGBA32Float };
-        //const TextureDesc kDTreeBuildingChildren = { "gDTreeBuildingChildren", ResourceFormat::RG32Uint };
-        //const TextureDesc kDTreeBuildingStatisticalWeight = { "gDTreeBuildingStatisticalWeight", ResourceFormat::R32Uint };
-        //const TextureDesc kDTreeBuildingMutex = { "gDTreeBuildingMutex", ResourceFormat::R32Uint };
+        const TextureDesc kDTreeEditData = { "gDTreeEditData", ResourceFormat::RG32Uint };
 
         const TextureDesc kSamplePos = { "gSamplePos", ResourceFormat::RGBA32Float };
         const TextureDesc kSampleRadiance = { "gSampleRadiance", ResourceFormat::RGBA32Float };
         const TextureDesc kSampleDirPdf = { "gSamplePdf", ResourceFormat::RGBA32Float };
     } kInternalChannels;
-
-    //ChannelList kInternalChannels = {
-        //{"tree1",   "gDTreeSums",       "feiks", false, ResourceFormat::RGBA32Float},
-        //{"tree2",   "gDTreeChildren",   "feiks", false, ResourceFormat::RG32Uint},
-        //{"tree3",   "gSTreeData",       "feiks", false, ResourceFormat::RGBA32Uint},
-
-        //{"sample1", "gSamplePos",       "feiks"},
-        //{"sample2", "gSampleRadiance",  "feiks"},
-        //{"sample3", "gSamplePdf",       "feiks"}
-    //};
 }
 
 PPGPass::PPGPass(const Dictionary& dict) : PathTracer(dict, kOutputChannels)
@@ -139,10 +127,14 @@ PPGPass::PPGPass(const Dictionary& dict) : PathTracer(dict, kOutputChannels)
     mSDTreeUpdatePasses.pRescaleDTreePass = ComputePass::create("RenderPasses/PPGPass/RescaleDTreeSums.cs.hlsl", "main");
     mSDTreeUpdatePasses.pSplatIntoSDTreePass = ComputePass::create("RenderPasses/PPGPass/SplatIntoSDTree.cs.hlsl", "main");
     mSDTreeUpdatePasses.pPropagateDTreeSumsPass = ComputePass::create("RenderPasses/PPGPass/PropagateDTreeSums.cs.hlsl", "main");
+    mSDTreeUpdatePasses.pResetFreedNodesPass = ComputePass::create("RenderPasses/PPGPass/ResetFreedNodesTex.cs.hlsl", "main");
     mSDTreeUpdatePasses.pUpdateDTreeStructurePass = ComputePass::create("RenderPasses/PPGPass/BuildDTree.cs.hlsl", "main", {}, false);
-    mSDTreeUpdatePasses.pCompressSTreePass = ComputePass::create("RenderPasses/PPGPass/CompressSTreeTex.cs.hlsl", "main");
     mSDTreeUpdatePasses.pCompressDTreePass = ComputePass::create("RenderPasses/PPGPass/CompressDTreeTex.cs.hlsl", "main");
-    mSDTreeUpdatePasses.pCopySingleDTreePass = ComputePass::create("RenderPasses/PPGPass/CopyDTreeTexRows.cs.hlsl", "main");
+    mSDTreeUpdatePasses.pRescaleSTreeStatWeightPass = ComputePass::create("RenderPasses/PPGPass/RescaleSTreeStatWeight.cs.hlsl", "main");
+    mSDTreeUpdatePasses.pUpdateSTreeStatWeightPass = ComputePass::create("RenderPasses/PPGPass/UpdateSTreeStatWeight.cs.hlsl", "main");
+    mSDTreeUpdatePasses.pUpdateSTreeStructurePass = ComputePass::create("RenderPasses/PPGPass/BuildSTree.cs.hlsl", "main", {}, false);
+    mSDTreeUpdatePasses.pCompressSTreePass = ComputePass::create("RenderPasses/PPGPass/CompressSTreeTex.cs.hlsl", "main");
+    mSDTreeUpdatePasses.pCopyDTreesPass = ComputePass::create("RenderPasses/PPGPass/CopyDTreeTexRows.cs.hlsl", "main");
 
     //mpResetStatisticalWeightPass = ComputePass::create("RenderPasses/PPGPass/ResetStatisticalWeightTex.cs.hlsl", "main");
     //mpResetMutexPass = ComputePass::create("RenderPasses/PPGPass/ResetMutexTex.cs.hlsl", "main");
@@ -215,52 +207,66 @@ void PPGPass::updateTreeTextures(RenderContext* pRenderContext)
         mSDTreeUpdatePasses.pBlitDTreePass->addDefine("G_IS_NEW_TEX", "1", true);
 
         uint sTreeWidth = kSTreeTexWidth;
+        uint sTreeHeight = kSTreeTexHeight;
         uint dTreeWidth = kDTreeTexWidth;
-        uint sdTreeHeight = kSDTreeTexIncrementHeight;
+        uint dTreeHeight = kDTreeTexHeight;
 
-        mTreeTextures.pSTreeTex = Texture::create2D(sTreeWidth, sdTreeHeight,
+        mTreeTextures.pSTreeTex = Texture::create2D(sTreeWidth, sTreeHeight,
             kInternalChannels.kSTreeData.mFormat, 1, 1, nullptr,
             kInternalChannels.kSTreeData.mBindflags);
+        mTreeTextures.pSTreeStatWeightTex = Texture::create2D(sTreeWidth, sTreeHeight,
+            kInternalChannels.kSTreeStatWeight.mFormat, 1, 1, nullptr,
+            kInternalChannels.kSTreeStatWeight.mBindflags);
+        mTreeTextures.pSTreeMetaDataTex = Texture::create1D(2,
+            kInternalChannels.kSTreeMetaData.mFormat, 1, 1, nullptr,
+            kInternalChannels.kSTreeMetaData.mBindflags);
 
-        mTreeTextures.pDTreeSumsTex = Texture::create2D(dTreeWidth, sdTreeHeight,
+        mTreeTextures.pDTreeSumsTex = Texture::create2D(dTreeWidth, kDTreeTexHeight,
             kInternalChannels.kDTreeSums.mFormat, 1, 1, nullptr,
             kInternalChannels.kDTreeSums.mBindflags);
-        mTreeTextures.pDTreeChildrenTex = Texture::create2D(dTreeWidth, sdTreeHeight,
+        mTreeTextures.pDTreeChildrenTex = Texture::create2D(dTreeWidth, kDTreeTexHeight,
             kInternalChannels.kDTreeChildren.mFormat, 1, 1, nullptr,
             kInternalChannels.kDTreeChildren.mBindflags);
-        mTreeTextures.pDTreeParentTex = Texture::create2D((dTreeWidth + 1) / 2, sdTreeHeight,
+        mTreeTextures.pDTreeParentTex = Texture::create2D((dTreeWidth + 1) / 2, kDTreeTexHeight,
             kInternalChannels.kDTreeParent.mFormat, 1, 1, nullptr,
             kInternalChannels.kDTreeParent.mBindflags);
-        mTreeTextures.pDTreeSizeTex = Texture::create1D(sdTreeHeight,
+        mTreeTextures.pDTreeSizeTex = Texture::create1D(kDTreeTexHeight,
             kInternalChannels.kDTreeSize.mFormat, 1, 1, nullptr,
             kInternalChannels.kDTreeSize.mBindflags);
 
-        mTreeTextures.pDTreeStatisticalWeightTex = Texture::create1D(sdTreeHeight,
+        mTreeTextures.pDTreeStatisticalWeightTex = Texture::create1D(kDTreeTexHeight,
             kInternalChannels.kDTreeStatisticalWeight.mFormat, 1, 1, nullptr,
             kInternalChannels.kDTreeStatisticalWeight.mBindflags);
+        mTreeTextures.pDTreeFreedNodes = Texture::create1D(kDTreeTexHeight,
+            ResourceFormat::R32Uint, 1, 1, nullptr,
+            kDefaultBindFlags);
+        mTreeTextures.pDTreeEditDataTex = Texture::create1D(3,
+            kInternalChannels.kDTreeEditData.mFormat, 1, 1, nullptr,
+            kInternalChannels.kDTreeEditData.mBindflags);
 
         auto& sPass = mSDTreeUpdatePasses.pBlitSTreePass;
-        sPass["BlitBuf"]["gOldRelevantTexSize"] = uint2(0, 0);
-        sPass["BlitBuf"]["gNewTexSize"] = uint2(sTreeWidth, sdTreeHeight);
+        sPass["BlitBuf"]["gNewTexSize"] = uint2(sTreeWidth, sTreeHeight);
 
+        sPass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
         sPass[kInternalChannels.kSTreeData.mShaderName] = mTreeTextures.pSTreeTex;
+        sPass[kInternalChannels.kSTreeStatWeight.mShaderName] = mTreeTextures.pSTreeStatWeightTex;
 
-        sPass->execute(pRenderContext, uint3(sTreeWidth, sdTreeHeight, 1));
+        sPass->execute(pRenderContext, uint3(sTreeWidth, sTreeHeight, 1));
 
         auto& pass = mSDTreeUpdatePasses.pBlitDTreePass;
         pass["BlitBuf"]["gOldRelevantTexSize"] = uint2(0, 0);
-        pass["BlitBuf"]["gNewTexSize"] = uint2(dTreeWidth, sdTreeHeight);
+        pass["BlitBuf"]["gNewTexSize"] = uint2(dTreeWidth, dTreeHeight);
         pass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
         pass[kInternalChannels.kDTreeChildren.mShaderName] = mTreeTextures.pDTreeChildrenTex;
         pass[kInternalChannels.kDTreeParent.mShaderName] = mTreeTextures.pDTreeParentTex;
         pass[kInternalChannels.kDTreeSize.mShaderName] = mTreeTextures.pDTreeSizeTex;
 
-        pass->execute(pRenderContext, uint3(dTreeWidth, sdTreeHeight, 1));
+        pass->execute(pRenderContext, uint3(dTreeWidth, dTreeHeight, 1));
 
         mSDTreeUpdatePasses.pBlitDTreePass->addDefine("G_IS_NEW_TEX", "0", true);
         return;
     }
-    if (mTreeTextures.pSTreeTex->getWidth() * mTreeTextures.pSTreeTex->getHeight() - 8 <= mpTree->getEstimatedSTreeSize())
+    /*if (mTreeTextures.pSTreeTex->getWidth() * mTreeTextures.pSTreeTex->getHeight() - 8 <= mpTree->getEstimatedSTreeSize())
     {
         uint currHeight = mTreeTextures.pSTreeTex->getHeight();
         uint currWidth = mTreeTextures.pSTreeTex->getWidth();
@@ -323,7 +329,7 @@ void PPGPass::updateTreeTextures(RenderContext* pRenderContext)
         mTreeTextures.pDTreeChildrenTex = newChildrenTex;
         mTreeTextures.pDTreeParentTex = newParentTex;
         mTreeTextures.pDTreeSizeTex = newSizeTex;
-    }
+    }*/
 }
 
 void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderData)
@@ -331,8 +337,8 @@ void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
     if (!beginFrame(pRenderContext, renderData))
         return;
 
-    std::cout << mpTree->getEstimatedAmountOfDTrees() << std::endl;
-    std::cout << mpTree->getEstimatedSTreeSize() << std::endl;
+    //std::cout << mpTree->getEstimatedAmountOfDTrees() << std::endl;
+    //std::cout << mpTree->getEstimatedSTreeSize() << std::endl;
 
     updateTreeTextures(pRenderContext);
     /*if (mTreeRebuild)
@@ -457,8 +463,8 @@ void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
     mpPPGVars["PPGBuf"]["gAmountOfSTreeNodesPerRow"] = mTreeTextures.pSTreeTex->getWidth();
     mpPPGVars["PPGBuf"]["gFrameIndex"] = mSharedParams.frameCount;
 
-    mpPPGVars["PPGBuf"]["gSceneMin"] = mpTree->getAABB().mMin;
-    mpPPGVars["PPGBuf"]["gSceneMax"] = mpTree->getAABB().mMax;
+    mpPPGVars["PPGBuf"]["gSceneMin"] = mAABB.mMin;
+    mpPPGVars["PPGBuf"]["gSceneMax"] = mAABB.mMax;
 
     // Raytrace the scene
     mpScene->raytrace(pRenderContext, mpPPGProg.get(), mpPPGVars, uint3(screenSize, 1));
@@ -472,11 +478,11 @@ void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
 
     propagateTreeSums(pRenderContext);
 
-    pRenderContext->uavBarrier(mTreeTextures.pDTreeStatisticalWeightTex.get());
-    pRenderContext->resourceBarrier(mTreeTextures.pDTreeStatisticalWeightTex.get(), Resource::State::CopySource);
-    auto vec = pRenderContext->readTextureSubresource(mTreeTextures.pDTreeStatisticalWeightTex.get(), 0);
+    updateDTreeStructure(pRenderContext);
 
-    updateTree(pRenderContext, vec);
+    //updateSTreeStatWeight(pRenderContext);
+
+    //updateSTreeStructure(pRenderContext);
 
     /*uint SWTWidth = mBuildingTreeTextures.pDTreeStatisticalWeightTex->getWidth();
     mpResetStatisticalWeightPass[kInternalChannels.kDTreeBuildingStatisticalWeight.mShaderName] = mBuildingTreeTextures.pDTreeStatisticalWeightTex;
@@ -581,20 +587,24 @@ void PPGPass::resetStatisticalWeight(RenderContext* pRenderContext)
 {
     auto& pass = mSDTreeUpdatePasses.pResetStatisticalWeightPass;
 
-    pass["ResetBuf"]["gAmountOfDTrees"] = mpTree->getEstimatedAmountOfDTrees();
+    pass["ResetBuf"]["gTexSize"] = mTreeTextures.pDTreeStatisticalWeightTex->getWidth();
     pass[kInternalChannels.kDTreeStatisticalWeight.mShaderName] = mTreeTextures.pDTreeStatisticalWeightTex;
 
-    pass->execute(pRenderContext, uint3(mpTree->getEstimatedAmountOfDTrees(), 1, 1));
+    pass->execute(pRenderContext, uint3(mTreeTextures.pDTreeStatisticalWeightTex->getWidth(), 1, 1));
 }
 
 void PPGPass::rescaleTree(RenderContext* pRenderContext)
 {
     auto& pass = mSDTreeUpdatePasses.pRescaleDTreePass;
 
-    pass["RescaleBuf"]["gRelevantTexSize"] = uint2(kDTreeTexWidth, mpTree->getEstimatedAmountOfDTrees());
-    pass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
+    uint2 texSize;
+    texSize.x = mTreeTextures.pDTreeSumsTex->getWidth();
+    texSize.y = mTreeTextures.pDTreeSumsTex->getHeight();
 
-    pass->execute(pRenderContext, uint3(kDTreeTexWidth, mpTree->getEstimatedAmountOfDTrees(), 1));
+    pass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
+    pass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
+
+    pass->execute(pRenderContext, uint3(texSize, 1));
 }
 
 void PPGPass::splatIntoTree(RenderContext* pRenderContext, uint2 screenSize)
@@ -603,8 +613,8 @@ void PPGPass::splatIntoTree(RenderContext* pRenderContext, uint2 screenSize)
 
     pass["SplatBuf"]["gScreenSize"] = screenSize;
     pass["SplatBuf"]["gAmountOfSTreeNodesPerRow"] = mTreeTextures.pSTreeTex->getWidth();
-    pass["SplatBuf"]["gSceneMin"] = mpTree->getAABB().mMin;
-    pass["SplatBuf"]["gSceneMax"] = mpTree->getAABB().mMax;
+    pass["SplatBuf"]["gSceneMin"] = mAABB.mMin;
+    pass["SplatBuf"]["gSceneMax"] = mAABB.mMax;
 
     pass[kInternalChannels.kSTreeData.mShaderName] = mTreeTextures.pSTreeTex;
     pass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
@@ -622,104 +632,149 @@ void PPGPass::propagateTreeSums(RenderContext* pRenderContext)
 {
     auto& pass = mSDTreeUpdatePasses.pPropagateDTreeSumsPass;
 
-    pass["PropagateBuf"]["gRelevantTexSize"] = uint2(kDTreeTexWidth, mpTree->getEstimatedAmountOfDTrees());
-
     pass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
     pass[kInternalChannels.kDTreeChildren.mShaderName] = mTreeTextures.pDTreeChildrenTex;
     pass[kInternalChannels.kDTreeParent.mShaderName] = mTreeTextures.pDTreeParentTex;
 
     pass[kInternalChannels.kDTreeSize.mShaderName] = mTreeTextures.pDTreeSizeTex;
+    pass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
 
-    pass->execute(pRenderContext, uint3(kDTreeTexWidth, mpTree->getEstimatedAmountOfDTrees(), 1));
+    uint2 texSize;
+    texSize.x = mTreeTextures.pDTreeSumsTex->getWidth();
+    texSize.y = mTreeTextures.pDTreeSumsTex->getHeight();
+
+    pass->execute(pRenderContext, uint3(texSize, 1));
 }
 
-void PPGPass::updateTree(RenderContext* pRenderContext, std::vector<uint8_t>& statWeightVec)
+void PPGPass::updateSTreeStatWeight(RenderContext* pRenderContext)
 {
+    uint2 texSize;
+
+    texSize.x = mTreeTextures.pSTreeStatWeightTex->getWidth();
+    texSize.y = mTreeTextures.pSTreeStatWeightTex->getHeight();
+
+    auto& rescalePass = mSDTreeUpdatePasses.pRescaleSTreeStatWeightPass;
+    rescalePass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
+    rescalePass[kInternalChannels.kSTreeStatWeight.mShaderName] = mTreeTextures.pSTreeStatWeightTex;
+
+    rescalePass->execute(pRenderContext, uint3(texSize, 1));
+
+    auto& updatePass = mSDTreeUpdatePasses.pUpdateSTreeStatWeightPass;
+    updatePass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
+    updatePass[kInternalChannels.kSTreeData.mShaderName] = mTreeTextures.pSTreeTex;
+    updatePass[kInternalChannels.kSTreeStatWeight.mShaderName] = mTreeTextures.pSTreeStatWeightTex;
+
+    updatePass[kInternalChannels.kDTreeStatisticalWeight.mShaderName] = mTreeTextures.pDTreeStatisticalWeightTex;
+
+    updatePass->execute(pRenderContext, uint3(texSize, 1));
+}
+
+void PPGPass::updateSTreeStructure(RenderContext* pRenderContext)
+{
+    auto& buildPass = mSDTreeUpdatePasses.pUpdateSTreeStructurePass;
+
+    if (buildPass->getVars() == nullptr)
+    {
+        for (auto& def : mpSampleGenerator->getDefines())
+        {
+            buildPass->addDefine(def.first, def.second, false);
+        }
+        buildPass->addDefine("K_USELESS_DEFINE", "0", true);
+
+        bool success = mpSampleGenerator->setShaderData(buildPass->getRootVar());
+        if (!success)
+        {
+            throw std::exception("Failed to bind sample generator");
+        }
+    }
+
+    buildPass["BuildBuf"]["gFrameCount"] = mSharedParams.frameCount++;
+
+    buildPass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
+    buildPass[kInternalChannels.kSTreeData.mShaderName] = mTreeTextures.pSTreeTex;
+    buildPass[kInternalChannels.kSTreeStatWeight.mShaderName] = mTreeTextures.pSTreeStatWeightTex;
+    buildPass[kInternalChannels.kDTreeEditData.mShaderName] = mTreeTextures.pDTreeEditDataTex;
+
+    buildPass->execute(pRenderContext, uint3(2, 1, 1));
+
+    auto& compressPass = mSDTreeUpdatePasses.pCompressSTreePass;
+    compressPass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
+    compressPass[kInternalChannels.kSTreeData.mShaderName] = mTreeTextures.pSTreeTex;
+    compressPass[kInternalChannels.kSTreeStatWeight.mShaderName] = mTreeTextures.pSTreeStatWeightTex;
+    compressPass[kInternalChannels.kDTreeEditData.mShaderName] = mTreeTextures.pDTreeEditDataTex;
+
+    uint2 texSize;
+
+    texSize.x = mTreeTextures.pSTreeTex->getWidth();
+    texSize.y = mTreeTextures.pSTreeTex->getHeight();
+
+    compressPass->execute(pRenderContext, uint3(texSize, 1));
+
+    auto& dTreeUpdatePass = mSDTreeUpdatePasses.pCopyDTreesPass;
+    dTreeUpdatePass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
+    dTreeUpdatePass[kInternalChannels.kDTreeChildren.mShaderName] = mTreeTextures.pDTreeChildrenTex;
+    dTreeUpdatePass[kInternalChannels.kDTreeParent.mShaderName] = mTreeTextures.pDTreeParentTex;
+    dTreeUpdatePass[kInternalChannels.kDTreeSize.mShaderName] = mTreeTextures.pDTreeSizeTex;
+    dTreeUpdatePass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
+
+    texSize.x = mTreeTextures.pDTreeSumsTex->getWidth();
+    texSize.y = mTreeTextures.pDTreeSumsTex->getHeight();
+
+    dTreeUpdatePass->execute(pRenderContext, uint3(texSize, 1));
+}
+
+void PPGPass::updateDTreeStructure(RenderContext* pRenderContext)
+{
+    auto& resetPass = mSDTreeUpdatePasses.pResetFreedNodesPass;
+
+    resetPass["ResetBuf"]["gTexSize"] = mTreeTextures.pDTreeFreedNodes->getWidth();
+
+    resetPass->execute(pRenderContext, uint3(mTreeTextures.pDTreeFreedNodes->getWidth()));
+
     auto& buildPass = mSDTreeUpdatePasses.pUpdateDTreeStructurePass;
 
-    Texture::SharedPtr freedNodesTemp = Texture::create1D(mpTree->getEstimatedAmountOfDTrees(),
-        ResourceFormat::R32Uint, 1, 1, nullptr,
-        kDefaultBindFlags);
-
-    for (auto& def : mpSampleGenerator->getDefines())
+    if (buildPass->getVars() == nullptr)
     {
-        buildPass->addDefine(def.first, def.second, false);
-    }
-    buildPass->addDefine("K_USELESS_DEFINE", "0", true);
+        for (auto& def : mpSampleGenerator->getDefines())
+        {
+            buildPass->addDefine(def.first, def.second, false);
+        }
+        buildPass->addDefine("K_USELESS_DEFINE", "0", true);
 
-    bool success = mpSampleGenerator->setShaderData(buildPass->getRootVar());
-    if (!success)
-    {
-        throw std::exception("Failed to bin sample generator");
+        bool success = mpSampleGenerator->setShaderData(buildPass->getRootVar());
+        if (!success)
+        {
+            throw std::exception("Failed to bin sample generator");
+        }
     }
 
-    buildPass["BuildBuf"]["gAmountOfDTrees"] = mpTree->getEstimatedAmountOfDTrees();
-    buildPass["BuildBuf"]["gFrameIndex"] = mSharedParams.frameCount;
+    buildPass["BuildBuf"]["gFrameIndex"] = mSharedParams.frameCount++;
 
     buildPass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
     buildPass[kInternalChannels.kDTreeChildren.mShaderName] = mTreeTextures.pDTreeChildrenTex;
     buildPass[kInternalChannels.kDTreeParent.mShaderName] = mTreeTextures.pDTreeParentTex;
 
     buildPass[kInternalChannels.kDTreeSize.mShaderName] = mTreeTextures.pDTreeSizeTex;
-    buildPass["gFreedNodes"] = freedNodesTemp;
+    buildPass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
+    buildPass["gFreedNodes"] = mTreeTextures.pDTreeFreedNodes;
 
-    buildPass->execute(pRenderContext, uint3(mpTree->getEstimatedAmountOfDTrees(), 1, 1));
+    buildPass->execute(pRenderContext, uint3(mTreeTextures.pDTreeSumsTex->getHeight(), 1, 1));
+
+    uint2 texSize;
+    texSize.x = mTreeTextures.pDTreeSumsTex->getWidth();
+    texSize.y = mTreeTextures.pDTreeSumsTex->getHeight();
 
     auto& dTreeCompressPass = mSDTreeUpdatePasses.pCompressDTreePass;
-
-    dTreeCompressPass["CompressBuf"]["gRelevantTexSize"] = uint2(kDTreeTexWidth, mpTree->getEstimatedAmountOfDTrees());
 
     dTreeCompressPass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
     dTreeCompressPass[kInternalChannels.kDTreeChildren.mShaderName] = mTreeTextures.pDTreeChildrenTex;
     dTreeCompressPass[kInternalChannels.kDTreeParent.mShaderName] = mTreeTextures.pDTreeParentTex;
 
     dTreeCompressPass[kInternalChannels.kDTreeSize.mShaderName] = mTreeTextures.pDTreeSizeTex;
-    dTreeCompressPass["gFreedNodes"] = freedNodesTemp;
+    dTreeCompressPass["gFreedNodes"] = mTreeTextures.pDTreeFreedNodes;
+    dTreeCompressPass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
 
-    std::vector<uint> statWeightVecUint = convertVector<uint>(statWeightVec);
-    mpTree->multiplyStatWeight();
-    mpTree->addToStatisticalWeight(statWeightVecUint);
-    auto data = mpTree->updateTree();
-
-    auto& sTreeCompressPass = mSDTreeUpdatePasses.pCompressSTreePass;
-    
-    uint usedTexHeight = (mpTree->getEstimatedSTreeSize() / kSTreeTexWidth) + 1;
-
-    sTreeCompressPass["CompressBuf"]["gRelevantTexSize"] = uint2(kSTreeTexWidth, usedTexHeight);
-    sTreeCompressPass["CompressBuf"]["gFullTexWidth"] = kSTreeTexWidth;
-
-    sTreeCompressPass["CompressBuf"]["gFirstChangedNodeIndex"] = data.mFirstChangedNode.mIndex;
-    sTreeCompressPass["CompressBuf"]["gFirstChangedNodeDTreeIndex"] = data.mFirstChangedNode.mDTreeIndex;
-    sTreeCompressPass["CompressBuf"]["gFirstChangedNodeChildren"] = data.mFirstChangedNode.mChildren;
-
-    sTreeCompressPass["CompressBuf"]["gSecondChangedNodeIndex"] = data.mSecondChangedNode.mIndex;
-    sTreeCompressPass["CompressBuf"]["gSecondChangedNodeDTreeIndex"] = data.mSecondChangedNode.mDTreeIndex;
-    sTreeCompressPass["CompressBuf"]["gSecondChangedNodeChildren"] = data.mSecondChangedNode.mChildren;
-
-    sTreeCompressPass["CompressBuf"]["gFirstNewNodeIndex"] = data.mFirstNewNode.mIndex;
-    sTreeCompressPass["CompressBuf"]["gFirstNewNodeData"] = data.mFirstNewNode.mData;
-
-    sTreeCompressPass["CompressBuf"]["gSecondNewNodeIndex"] = data.mSecondNewNode.mIndex;
-    sTreeCompressPass["CompressBuf"]["gSecondNewNodeData"] = data.mSecondNewNode.mData;
-
-
-    sTreeCompressPass[kInternalChannels.kSTreeData.mShaderName] = mTreeTextures.pSTreeTex;
-
-    sTreeCompressPass->execute(pRenderContext, uint3(kSTreeTexWidth, usedTexHeight, 1));
-
-    auto& copyPass = mSDTreeUpdatePasses.pCopySingleDTreePass;
-
-    copyPass["CopyBuf"]["gSourceRow"] = data.mDTreeCopyData.mCopySource;
-    copyPass["CopyBuf"]["gDestRow"] = data.mDTreeCopyData.mCopyDest;
-    copyPass["CopyBuf"]["gTexWidth"] = kDTreeTexWidth;
-
-    copyPass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
-    copyPass[kInternalChannels.kDTreeChildren.mShaderName] = mTreeTextures.pDTreeChildrenTex;
-    copyPass[kInternalChannels.kDTreeParent.mShaderName] = mTreeTextures.pDTreeParentTex;
-
-    copyPass[kInternalChannels.kDTreeSize.mShaderName] = mTreeTextures.pDTreeSizeTex;
-
-    copyPass->execute(pRenderContext, uint3(kDTreeTexWidth, 1, 1));
+    dTreeCompressPass->execute(pRenderContext, uint3(texSize, 1));
 }
 
 void PPGPass::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene)
@@ -730,7 +785,7 @@ void PPGPass::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pS
 
     mpPPGVars = nullptr;
 
-    mpPPGProg->setDefines(pScene->getSceneDefines());
+    mpPPGProg->addDefines(pScene->getSceneDefines());
 
     const auto& kaas = pScene->getSceneBounds();
     std::cout << "Scene min: " << kaas.minPoint.x << ", " << kaas.minPoint.y << ", " << kaas.minPoint.z << std::endl;
@@ -738,12 +793,7 @@ void PPGPass::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pS
 
     const auto& aabb_falcor = pScene->getSceneBounds();
     float3 delta = aabb_falcor.extent() * 0.1f;
-    mpTree = STreeStump::SharedPtr(new STreeStump(
-        float2(kSTreeSplitTresHold, kSTreeMergeTresHold),
-        kSTreeStatWeightFactor,
-        MyAABB(aabb_falcor.minPoint - delta, aabb_falcor.maxPoint + delta))
-    );
-    //mpTree = STree::SharedPtr(new STree(AABB(aabb_falcor.getMinPos() - delta, aabb_falcor.getMaxPos() + delta)));
+    mAABB = MyAABB(aabb_falcor.minPoint - delta, aabb_falcor.maxPoint + delta);
 }
 
 void PPGPass::renderUI(Gui::Widgets& widget)

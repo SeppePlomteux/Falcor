@@ -1,12 +1,11 @@
 #define G_IS_NEW_TEX 0
 
+RWTexture1D<uint> gSTreeMetaData;
 RWTexture2D<uint4> gSTreeData;
-
-Texture2D<uint4> gOldSTreeData;
+RWTexture2D<float> gSTreeStatWeight;
 
 cbuffer BlitBuf
 {
-    uint2 gOldRelevantTexSize;
     uint2 gNewTexSize;
 };
 
@@ -15,12 +14,11 @@ void main( uint3 DTid : SV_DispatchThreadID )
 {
     if (any(DTid.xy >= gNewTexSize))
         return;
-    if (all(DTid.xy < gOldRelevantTexSize))
+    gSTreeData[DTid.xy] = uint4(0);
+    gSTreeStatWeight[DTid.xy] = 0.f;
+    if (all(DTid.xy == uint2(0, 0)))
     {
-        gSTreeData[DTid.xy] = gOldSTreeData[DTid.xy];
-    }
-    else
-    {
-        gSTreeData[DTid.xy] = uint4(0);
+        gSTreeMetaData[0] = 1;
+        gSTreeMetaData[1] = 1;
     }
 }

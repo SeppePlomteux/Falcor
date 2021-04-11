@@ -51,6 +51,8 @@ struct STreeChangeData
 struct MyAABB
 {
     MyAABB(float3 min, float3 max);
+    MyAABB() : MyAABB(float3(0.f), float3(0.f))
+    {}
     inline float3 getExtents() const;
 
     float3 mMin;
