@@ -24,5 +24,6 @@
     <ShaderSource Include="BuildDTree.cs.hlsl" />
     <ShaderSource Include="BlitDTreeTex.cs.hlsl" />
     <ShaderSource Include="BlitSTreeTex.cs.hlsl" />
+    <ShaderSource Include="ResetFreedNodesTex.cs.hlsl" />
   </ItemGroup>
 </Project>

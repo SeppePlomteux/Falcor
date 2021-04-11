@@ -50,6 +50,7 @@
     <ShaderSource Include="PPG.rt.slang" />
     <ShaderSource Include="PropagateDTreeSums.cs.hlsl" />
     <ShaderSource Include="RescaleDTreeSums.cs.hlsl" />
+    <ShaderSource Include="ResetFreedNodesTex.cs.hlsl" />
     <ShaderSource Include="ResetMutexTex.cs.hlsl" />
     <ShaderSource Include="ResetStatisticalWeightTex.cs.hlsl" />
     <ShaderSource Include="SplatIntoSDTree.cs.hlsl" />

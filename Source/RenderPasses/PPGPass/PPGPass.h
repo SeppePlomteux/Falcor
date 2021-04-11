@@ -105,6 +105,7 @@ private:
         // One dimentional textures
         Texture::SharedPtr pDTreeSizeTex;
         Texture::SharedPtr pDTreeStatisticalWeightTex;
+        Texture::SharedPtr pDTreeFreedNodesTex;
     } mTreeTextures;
 
     /*struct
@@ -136,6 +137,7 @@ private:
         ComputePass::SharedPtr pRescaleDTreePass;
         ComputePass::SharedPtr pSplatIntoSDTreePass;
         ComputePass::SharedPtr pPropagateDTreeSumsPass;
+        ComputePass::SharedPtr pResetFreedNodesTex;
         ComputePass::SharedPtr pUpdateDTreeStructurePass;
         ComputePass::SharedPtr pCompressDTreePass;
         ComputePass::SharedPtr pCompressSTreePass;

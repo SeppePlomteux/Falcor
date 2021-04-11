@@ -27,6 +27,7 @@
  **************************************************************************/
 #include "PPGPass.h"
 
+
 // Don't remove this. it's required for hot-reload to function properly
 extern "C" __declspec(dllexport) const char* getProjDir()
 {
@@ -139,6 +140,7 @@ PPGPass::PPGPass(const Dictionary& dict) : PathTracer(dict, kOutputChannels)
     mSDTreeUpdatePasses.pRescaleDTreePass = ComputePass::create("RenderPasses/PPGPass/RescaleDTreeSums.cs.hlsl", "main");
     mSDTreeUpdatePasses.pSplatIntoSDTreePass = ComputePass::create("RenderPasses/PPGPass/SplatIntoSDTree.cs.hlsl", "main");
     mSDTreeUpdatePasses.pPropagateDTreeSumsPass = ComputePass::create("RenderPasses/PPGPass/PropagateDTreeSums.cs.hlsl", "main");
+    mSDTreeUpdatePasses.pResetFreedNodesTex = ComputePass::create("RenderPasses/PPGPass/ResetFreedNodesTex.cs.hlsl", "main");
     mSDTreeUpdatePasses.pUpdateDTreeStructurePass = ComputePass::create("RenderPasses/PPGPass/BuildDTree.cs.hlsl", "main", {}, false);
     mSDTreeUpdatePasses.pCompressSTreePass = ComputePass::create("RenderPasses/PPGPass/CompressSTreeTex.cs.hlsl", "main");
     mSDTreeUpdatePasses.pCompressDTreePass = ComputePass::create("RenderPasses/PPGPass/CompressDTreeTex.cs.hlsl", "main");
@@ -238,6 +240,9 @@ void PPGPass::updateTreeTextures(RenderContext* pRenderContext)
         mTreeTextures.pDTreeStatisticalWeightTex = Texture::create1D(sdTreeHeight,
             kInternalChannels.kDTreeStatisticalWeight.mFormat, 1, 1, nullptr,
             kInternalChannels.kDTreeStatisticalWeight.mBindflags);
+        mTreeTextures.pDTreeFreedNodesTex = Texture::create1D(sdTreeHeight,
+            ResourceFormat::R32Uint, 1, 1, nullptr,
+            kDefaultBindFlags);
 
         auto& sPass = mSDTreeUpdatePasses.pBlitSTreePass;
         sPass["BlitBuf"]["gOldRelevantTexSize"] = uint2(0, 0);
@@ -474,6 +479,7 @@ void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
 
     pRenderContext->uavBarrier(mTreeTextures.pDTreeStatisticalWeightTex.get());
     pRenderContext->resourceBarrier(mTreeTextures.pDTreeStatisticalWeightTex.get(), Resource::State::CopySource);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // sleep to see if that allows program to run correctly
     auto vec = pRenderContext->readTextureSubresource(mTreeTextures.pDTreeStatisticalWeightTex.get(), 0);
 
     updateTree(pRenderContext, vec);
@@ -635,11 +641,12 @@ void PPGPass::propagateTreeSums(RenderContext* pRenderContext)
 
 void PPGPass::updateTree(RenderContext* pRenderContext, std::vector<uint8_t>& statWeightVec)
 {
-    auto& buildPass = mSDTreeUpdatePasses.pUpdateDTreeStructurePass;
+    auto& resetPass = mSDTreeUpdatePasses.pResetFreedNodesTex;
 
-    Texture::SharedPtr freedNodesTemp = Texture::create1D(mpTree->getEstimatedAmountOfDTrees(),
-        ResourceFormat::R32Uint, 1, 1, nullptr,
-        kDefaultBindFlags);
+    resetPass["ResetBuf"]["gTexSize"] = mTreeTextures.pDTreeFreedNodesTex->getWidth();
+    resetPass->execute(pRenderContext, uint3(mTreeTextures.pDTreeFreedNodesTex->getWidth(), 1, 1));
+
+    auto& buildPass = mSDTreeUpdatePasses.pUpdateDTreeStructurePass;
 
     for (auto& def : mpSampleGenerator->getDefines())
     {
@@ -661,7 +668,7 @@ void PPGPass::updateTree(RenderContext* pRenderContext, std::vector<uint8_t>& st
     buildPass[kInternalChannels.kDTreeParent.mShaderName] = mTreeTextures.pDTreeParentTex;
 
     buildPass[kInternalChannels.kDTreeSize.mShaderName] = mTreeTextures.pDTreeSizeTex;
-    buildPass["gFreedNodes"] = freedNodesTemp;
+    buildPass["gFreedNodes"] = mTreeTextures.pDTreeFreedNodesTex;
 
     buildPass->execute(pRenderContext, uint3(mpTree->getEstimatedAmountOfDTrees(), 1, 1));
 
@@ -674,7 +681,13 @@ void PPGPass::updateTree(RenderContext* pRenderContext, std::vector<uint8_t>& st
     dTreeCompressPass[kInternalChannels.kDTreeParent.mShaderName] = mTreeTextures.pDTreeParentTex;
 
     dTreeCompressPass[kInternalChannels.kDTreeSize.mShaderName] = mTreeTextures.pDTreeSizeTex;
-    dTreeCompressPass["gFreedNodes"] = freedNodesTemp;
+    dTreeCompressPass["gFreedNodes"] = mTreeTextures.pDTreeFreedNodesTex;
+
+    uint2 texSize;
+    texSize.x = mTreeTextures.pDTreeSumsTex->getWidth();
+    texSize.y = mTreeTextures.pDTreeSumsTex->getHeight();
+
+    dTreeCompressPass->execute(pRenderContext, uint3(texSize, 1));
 
     std::vector<uint> statWeightVecUint = convertVector<uint>(statWeightVec);
     mpTree->multiplyStatWeight();
@@ -730,7 +743,7 @@ void PPGPass::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pS
 
     mpPPGVars = nullptr;
 
-    mpPPGProg->setDefines(pScene->getSceneDefines());
+    mpPPGProg->addDefines(pScene->getSceneDefines());
 
     const auto& kaas = pScene->getSceneBounds();
     std::cout << "Scene min: " << kaas.minPoint.x << ", " << kaas.minPoint.y << ", " << kaas.minPoint.z << std::endl;
