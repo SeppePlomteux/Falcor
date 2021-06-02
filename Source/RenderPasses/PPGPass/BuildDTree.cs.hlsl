@@ -1,11 +1,15 @@
-#define G_MAX_DTREE_SIZE 600
-#define G_MAX_DTREE_DEPTH 5
+#define G_MAX_DTREE_SIZE 1000
+//#define G_MAX_DTREE_DEPTH 20
 
-#define G_MERGE_FACTOR 0.026666666f
-#define G_SPLIT_FACTOR 0.038095
+//#define G_MERGE_FACTOR 0.026666666f
+//#define G_SPLIT_FACTOR 0.038095f
+
+#define G_MIN_PROB 1e-20f
 
 #define G_16_BITMASK_LEFT  0xFFFF0000
 #define G_16_BITMASK_RIGHT 0x0000FFFF
+
+//#define K_DO_MERGE 1
 
 import Utils.Sampling.SampleGenerator;
 
@@ -25,16 +29,26 @@ cbuffer BuildBuf
 
 struct DTreeNode
 {
-    // if mSums == (0, 0, 0, 0), then node is empty
     float4 mSums;
     uint2 mChildren;
     uint2 mTexelPos;
     uint mParent;
+    
+    uint getChildIndex(uint localIndex)
+    {
+        uint packedData = (localIndex <= 1) ? mChildren.x : mChildren.y;
+        return (localIndex & 1) ? (packedData & G_16_BITMASK_RIGHT) : (packedData >> 16);
+    }
 
-    // Encode a leaf as a node with child indices 0 (which is the root)
-    bool isLeaf()
+    bool isLeaf(uint relativeChildIndex)
+    {
+        return getChildIndex(relativeChildIndex) == 0;
+    }
+
+    bool allChildsAreLeaf()
     {
         return all(mChildren == 0);
+
     }
 
     uint4 getChildIndeces()
@@ -45,12 +59,6 @@ struct DTreeNode
         res.z = mChildren.y >> 16;
         res.w = mChildren.y & G_16_BITMASK_RIGHT;
         return res;
-    }
-    
-    uint getChildIndex(uint localIndex)
-    {
-        uint packedData = localIndex <= 1 ? mChildren.x : mChildren.y;
-        return localIndex & 1 ? packedData & G_16_BITMASK_RIGHT : packedData >> 16;
     }
 
     [mutating]void setChildIndex(uint localIndex, uint newAbsoluteIndex)
@@ -63,7 +71,7 @@ struct DTreeNode
         }
         else
         {
-            packedData = newAbsoluteIndex << 16 + (packedData & G_16_BITMASK_RIGHT);
+            packedData = (newAbsoluteIndex << 16) + (packedData & G_16_BITMASK_RIGHT);
         }
         mChildren[packedDataIndex] = packedData;
     }
@@ -80,10 +88,10 @@ struct DTreeNode
         uint2 parentPos = mTexelPos;
         parentPos.x /= 2;
         uint oldVal = gDTreeParent[parentPos], newVal;
-        if (mTexelPos.x % 2)
+        if (mTexelPos.x % 2 == 1)
             newVal = (oldVal & G_16_BITMASK_LEFT) + (mParent & G_16_BITMASK_RIGHT);
         else
-            newVal = mParent << 16 + (oldVal & G_16_BITMASK_RIGHT);
+            newVal = (mParent << 16) + (oldVal & G_16_BITMASK_RIGHT);
         gDTreeParent[parentPos] = newVal;
     }
 
@@ -123,7 +131,7 @@ DTreeNode buildDTreeNode(uint treeIndex, uint nodeIndex)
     parentTexelPos.x /= 2;
     uint packedParentData = gDTreeParent[parentTexelPos];
 
-    res.mParent = res.mTexelPos.x % 2 ? packedParentData & G_16_BITMASK_RIGHT : packedParentData >> 16;
+    res.mParent = (res.mTexelPos.x % 2 == 1) ? (packedParentData & G_16_BITMASK_RIGHT) : (packedParentData >> 16);
     
     return res;
 }
@@ -138,7 +146,8 @@ uint removeDTreeCell(DTreeNode rootNode, SampleGenerator sg)
     {
         float4 factors = rootNode.mSums;
         factors = rootNode.getChildIndeces() == 0 ? 0 : factors;
-        factors = factors == 0.f ? 0 : 1 / factors;
+        factors = factors == 0.f ? 0 : max(1 / factors, G_MIN_PROB);
+        factors = isfinite(factors) ? factors : G_MIN_PROB;
         factors.y = factors.x + factors.y;
         factors.z = factors.y + factors.z;
         factors.w = factors.z + factors.w;
@@ -146,20 +155,27 @@ uint removeDTreeCell(DTreeNode rootNode, SampleGenerator sg)
         if (factors.w == 0.f) // happens if rootNode is a leaf
             return 0;
 
-        float rand = sampleNext1D(sg) * factors.w; // Change to sample1D(sg)
+        float rand = sampleNext1D(sg) * factors.w;
         
         uint4 indexHelper = factors <= rand ? 1u : 0u;
-        uint relIndex = indexHelper.x + indexHelper.y + indexHelper.z + indexHelper.w;
+        uint relIndex = min(3u, indexHelper.x + indexHelper.y + indexHelper.z + indexHelper.w);
         uint absIndex = rootNode.getChildIndex(relIndex);
 
+        if (absIndex == 0)
+            return 0;
+        
         childNode = buildDTreeNode(rootNode.getTreeIndex(), absIndex);
 
-        if (childNode.isLeaf() && rootNode.mSums[relIndex] <= totalSum * G_MERGE_FACTOR)
+        if (childNode.allChildsAreLeaf() && rootNode.mSums[relIndex] <= totalSum * G_MERGE_FACTOR)
         {
             rootNode.setChildIndex(relIndex, 0);
             rootNode.writeChildDataToTextures();
-            gDTreeSize[rootNode.getTreeIndex()]--;
-            return absIndex;
+            childNode.mParent = 0;
+            childNode.mChildren = uint2(0);
+            childNode.mSums = float4(0.f);
+            childNode.writeToTextures();
+            //gDTreeSize[rootNode.getTreeIndex()]--;
+            return childNode.getNodeIndex();
         }
 
         rootNode = childNode;
@@ -207,10 +223,10 @@ void addDTreeCell(DTreeNode rootNode, SampleGenerator sg)
         if (factors.w == 0.f) // happens if rootNode is a leaf
             return;
 
-        float rand = sampleNext1D(sg) * factors.w; // Change to sample1D(sg)
+        float rand = sampleNext1D(sg) * factors.w;
         
         uint4 indexHelper = factors <= rand ? 1u : 0u;
-        uint relIndex = indexHelper.x + indexHelper.y + indexHelper.z + indexHelper.w;
+        uint relIndex = min(3, indexHelper.x + indexHelper.y + indexHelper.z + indexHelper.w);
         uint absIndex = rootNode.getChildIndex(relIndex);
 
         if (absIndex == 0 && rootNode.mSums[relIndex] >= totalSum * G_SPLIT_FACTOR)
@@ -218,15 +234,17 @@ void addDTreeCell(DTreeNode rootNode, SampleGenerator sg)
             splitDTreeNode(rootNode, relIndex);
             return;
         }
-        rootNode = buildDTreeNode(rootNode.getTreeIndex(), absIndex);
         if (absIndex == 0)
             return;
+        rootNode = buildDTreeNode(rootNode.getTreeIndex(), absIndex);
     }
 }
 
 [numthreads(32, 1, 1)]
 void main( uint3 DTid : SV_DispatchThreadID )
 {
+    if (DTid.y > 0)
+        return;
     if (DTid.x >= gSTreeMetaData[1])
         return;
 
@@ -234,9 +252,12 @@ void main( uint3 DTid : SV_DispatchThreadID )
     for (int i = 0; i < 2; i++)
         sampleNext3D(sg);
     
-    DTreeNode root = buildDTreeNode(0, DTid.x);
-
-    gFreedNodes[DTid.x] = removeDTreeCell(root, sg);
+    DTreeNode root = buildDTreeNode(DTid.x, 0);
 
     addDTreeCell(root, sg);
+    
+    if (K_DO_MERGE)
+    {
+        gFreedNodes[DTid.x] = removeDTreeCell(root, sg);
+    }
 }

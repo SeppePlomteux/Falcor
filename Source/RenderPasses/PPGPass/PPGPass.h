@@ -88,10 +88,6 @@ private:
     void updateSTreeStructure(RenderContext* pRenderContext);
     void updateDTreeStructure(RenderContext* pRenderContext);
 
-
-    //size_t mCurrentSamplesPerPixel = 0;
-    //size_t mMaxSamplesPerPixel = 1;
-
     RtProgram::SharedPtr mpPPGProg;
     RtProgramVars::SharedPtr mpPPGVars;
     ParameterBlock::SharedPtr mpPPGParamBlock;
@@ -113,14 +109,6 @@ private:
         Texture::SharedPtr pDTreeFreedNodes;
     } mTreeTextures;
 
-    /*struct
-    {
-        Texture::SharedPtr pDTreeSumsTex;
-        Texture::SharedPtr pDTreeChildrenTex;
-        Texture::SharedPtr pDTreeStatisticalWeightTex;
-        Texture::SharedPtr pDTreeMutex;
-    } mBuildingTreeTextures;*/
-
     struct
     {
         Texture::SharedPtr pPosTex;
@@ -128,12 +116,7 @@ private:
         Texture::SharedPtr pDirPdfTex;
     } mSampleResultTextures;
 
-    //STree::SharedPtr mpTree;
-    //STreeStump::SharedPtr mpTree;
-
     MyAABB mAABB;
-    
-    //std::unique_ptr<std::thread> mpWorkingThread; // If Falcor exits, unique pointer ensures that working thread is stopped
 
     struct
     {
@@ -154,10 +137,43 @@ private:
         ComputePass::SharedPtr pCopyDTreesPass;
     } mSDTreeUpdatePasses;
 
-    //ComputePass::SharedPtr mpResetStatisticalWeightPass;
-    //ComputePass::SharedPtr mpResetMutexPass;
-    //ComputePass::SharedPtr mpSplatIntoSDTreePass;
+    struct
+    {
+        bool resetSDTreeOnLightingChanges = true;
 
-    //void rebuildTree();
-    //void updateDTreeBuilding(DTreeTexData data);
+        bool evalDirectLight = false;
+        bool includeFirstDirectBounce = true;
+
+        uint amountOfRISSamples = 8u;
+
+        uint maxBounces = 5;
+
+        float streeFactor = 0.9f;
+        float streeSplitTreshold = 100000.f;
+        float streeMergetreshold = 90000.f;
+        bool streeDoMerge = true;
+
+        float dtreeFactor = 0.9882f;
+        float dtreeSplitTreshold = 0.038095f;
+        float dtreeMergeTreshold = 0.026666666f;
+        uint dtreeMaxDepth = 20u;
+        bool dtreeDoMerge = true;
+    } mRenderSettings;
+
+    void setTracingDefines();
+    void setDTreeRescaleDefines();
+    void setSTreeRescaleDefines();
+    void setBuildDTreeDefines();
+    void setBuildSTreeDefines();
+
+    struct
+    {
+        bool ppgSettingsChanged = true;
+
+        bool streeFactorChanged = true;
+        bool streeTresholdChanged = true;
+
+        bool dtreeFactorChanged = true;
+        bool dtreeTresholdChanged = true;
+    } mSettingsChanged;
 };

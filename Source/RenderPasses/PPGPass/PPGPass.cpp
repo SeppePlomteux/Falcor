@@ -52,10 +52,10 @@ namespace
 
     //int kMaxAvailableThreads =  std::thread::hardware_concurrency() - 1; // leave out one thread for main loop
 
-    const uint kSTreeTexWidth = 1024;
-    const uint kSTreeTexHeight = 1024;
-    const uint kDTreeTexWidth = 600;
-    const uint kDTreeTexHeight = 2048;
+    const uint kSTreeTexWidth = 400;
+    const uint kSTreeTexHeight = 400;
+    const uint kDTreeTexWidth = 1000;
+    const uint kDTreeTexHeight = 8192;
 
     ResourceBindFlags kDefaultBindFlags = ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess;
 
@@ -124,18 +124,18 @@ PPGPass::PPGPass(const Dictionary& dict) : PathTracer(dict, kOutputChannels)
     mSDTreeUpdatePasses.pBlitDTreePass = ComputePass::create("RenderPasses/PPGPass/BlitDTreeTex.cs.hlsl", "main", {}, false);
     mSDTreeUpdatePasses.pBlitDTreePass->addDefine("G_IS_NEW_TEX", "1", true);
     mSDTreeUpdatePasses.pResetStatisticalWeightPass = ComputePass::create("RenderPasses/PPGPass/ResetStatisticalWeightTex.cs.hlsl", "main");
-    mSDTreeUpdatePasses.pRescaleDTreePass = ComputePass::create("RenderPasses/PPGPass/RescaleDTreeSums.cs.hlsl", "main");
+    mSDTreeUpdatePasses.pRescaleDTreePass = ComputePass::create("RenderPasses/PPGPass/RescaleDTreeSums.cs.hlsl", "main", {}, false);
     mSDTreeUpdatePasses.pSplatIntoSDTreePass = ComputePass::create("RenderPasses/PPGPass/SplatIntoSDTree.cs.hlsl", "main");
     mSDTreeUpdatePasses.pPropagateDTreeSumsPass = ComputePass::create("RenderPasses/PPGPass/PropagateDTreeSums.cs.hlsl", "main");
     mSDTreeUpdatePasses.pResetFreedNodesPass = ComputePass::create("RenderPasses/PPGPass/ResetFreedNodesTex.cs.hlsl", "main");
     mSDTreeUpdatePasses.pUpdateDTreeStructurePass = ComputePass::create("RenderPasses/PPGPass/BuildDTree.cs.hlsl", "main", {}, false);
     mSDTreeUpdatePasses.pCompressDTreePass = ComputePass::create("RenderPasses/PPGPass/CompressDTreeTex.cs.hlsl", "main");
-    mSDTreeUpdatePasses.pRescaleSTreeStatWeightPass = ComputePass::create("RenderPasses/PPGPass/RescaleSTreeStatWeight.cs.hlsl", "main");
+    mSDTreeUpdatePasses.pRescaleSTreeStatWeightPass = ComputePass::create("RenderPasses/PPGPass/RescaleSTreeStatWeight.cs.hlsl", "main", {}, false);
     mSDTreeUpdatePasses.pUpdateSTreeStatWeightPass = ComputePass::create("RenderPasses/PPGPass/UpdateSTreeStatWeight.cs.hlsl", "main");
     mSDTreeUpdatePasses.pUpdateSTreeStructurePass = ComputePass::create("RenderPasses/PPGPass/BuildSTree.cs.hlsl", "main", {}, false);
     mSDTreeUpdatePasses.pCompressSTreePass = ComputePass::create("RenderPasses/PPGPass/CompressSTreeTex.cs.hlsl", "main");
     mSDTreeUpdatePasses.pCopyDTreesPass = ComputePass::create("RenderPasses/PPGPass/CopyDTreeTexRows.cs.hlsl", "main");
-
+    
     //mpResetStatisticalWeightPass = ComputePass::create("RenderPasses/PPGPass/ResetStatisticalWeightTex.cs.hlsl", "main");
     //mpResetMutexPass = ComputePass::create("RenderPasses/PPGPass/ResetMutexTex.cs.hlsl", "main");
     //mpSplatIntoSDTreePass = ComputePass::create("RenderPasses/PPGPass/SplatIntoSDTree.cs.hlsl", "main");
@@ -159,6 +159,71 @@ RenderPassReflection PPGPass::reflect(const CompileData& compileData)
     addRenderPassInputs(reflector, kShadingInputChannels, kDefaultBindFlags | ResourceBindFlags::RenderTarget);
     addRenderPassOutputs(reflector, kOutputChannels);
     return reflector;
+}
+
+
+std::string bool_to_str(bool b)
+{
+    if (b)
+        return "1";
+    return "0";
+}
+
+void PPGPass::setTracingDefines()
+{
+    if (!mSettingsChanged.ppgSettingsChanged)
+        return;
+    mSettingsChanged.ppgSettingsChanged = false;
+    mpPPGVars = nullptr;
+
+    Program::DefineList dl;
+    dl.add("K_EVAL_DIRECT", bool_to_str(mRenderSettings.evalDirectLight));
+    dl.add("K_EVAL_FIRST_DIRECT_BOUNCE", bool_to_str(mRenderSettings.includeFirstDirectBounce));
+    dl.add("K_HEMISPHERE_SAMPLE_ITERATIONS", std::to_string(mRenderSettings.amountOfRISSamples));
+    dl.add("K_MAX_BOUNCES", std::to_string(mRenderSettings.maxBounces));
+
+    mpPPGProg->addDefines(dl);
+}
+
+void PPGPass::setDTreeRescaleDefines()
+{
+    if (!mSettingsChanged.dtreeFactorChanged)
+        return;
+    mSettingsChanged.dtreeFactorChanged = false;
+
+    mSDTreeUpdatePasses.pRescaleDTreePass->addDefine("K_SCALE_FACTOR", std::to_string(mRenderSettings.dtreeFactor), true);
+}
+
+void PPGPass::setSTreeRescaleDefines()
+{
+    if (!mSettingsChanged.streeFactorChanged)
+        return;
+    mSettingsChanged.streeFactorChanged = false;
+
+    mSDTreeUpdatePasses.pRescaleSTreeStatWeightPass->addDefine("K_SCALE_FACTOR", std::to_string(mRenderSettings.streeFactor), true);
+}
+
+void PPGPass::setBuildDTreeDefines()
+{
+    if (!mSettingsChanged.dtreeTresholdChanged)
+        return;
+    mSettingsChanged.dtreeTresholdChanged = false;
+
+    mSDTreeUpdatePasses.pUpdateDTreeStructurePass->addDefine("G_SPLIT_FACTOR", std::to_string(mRenderSettings.dtreeSplitTreshold));
+    mSDTreeUpdatePasses.pUpdateDTreeStructurePass->addDefine("G_MERGE_FACTOR", std::to_string(mRenderSettings.dtreeMergeTreshold));
+    mSDTreeUpdatePasses.pUpdateDTreeStructurePass->addDefine("G_MAX_DTREE_DEPTH", std::to_string(mRenderSettings.dtreeMaxDepth));
+    mSDTreeUpdatePasses.pUpdateDTreeStructurePass->addDefine("K_DO_MERGE", bool_to_str(mRenderSettings.dtreeDoMerge), true);
+}
+
+void PPGPass::setBuildSTreeDefines()
+{
+    if (!mSettingsChanged.streeTresholdChanged)
+        return;
+    mSettingsChanged.streeTresholdChanged = false;
+
+    mSDTreeUpdatePasses.pUpdateSTreeStructurePass->addDefine("G_SPLIT_TRESHOLD", std::to_string(mRenderSettings.streeSplitTreshold));
+    mSDTreeUpdatePasses.pUpdateSTreeStructurePass->addDefine("G_MERGE_TRESHOLD", std::to_string(mRenderSettings.streeMergetreshold));
+    mSDTreeUpdatePasses.pUpdateSTreeStructurePass->addDefine("K_DO_MERGE", bool_to_str(mRenderSettings.streeDoMerge), true);
 }
 
 template<typename T>
@@ -201,16 +266,17 @@ void PPGPass::updateTreeTextures(RenderContext* pRenderContext)
 {
     if (!mpScene)
         return;
-    if (mTreeTextures.pDTreeSumsTex == nullptr)
+    // remake all textures and reset STree as well
+    mSDTreeUpdatePasses.pBlitDTreePass->addDefine("G_IS_NEW_TEX", "1", true);
+
+    uint sTreeWidth = kSTreeTexWidth;
+    uint sTreeHeight = kSTreeTexHeight;
+    uint dTreeWidth = kDTreeTexWidth;
+    uint dTreeHeight = kDTreeTexHeight;
+
+
+    if (mTreeTextures.pSTreeTex == nullptr)
     {
-        // remake all textures and reset STree as well
-        mSDTreeUpdatePasses.pBlitDTreePass->addDefine("G_IS_NEW_TEX", "1", true);
-
-        uint sTreeWidth = kSTreeTexWidth;
-        uint sTreeHeight = kSTreeTexHeight;
-        uint dTreeWidth = kDTreeTexWidth;
-        uint dTreeHeight = kDTreeTexHeight;
-
         mTreeTextures.pSTreeTex = Texture::create2D(sTreeWidth, sTreeHeight,
             kInternalChannels.kSTreeData.mFormat, 1, 1, nullptr,
             kInternalChannels.kSTreeData.mBindflags);
@@ -243,93 +309,29 @@ void PPGPass::updateTreeTextures(RenderContext* pRenderContext)
         mTreeTextures.pDTreeEditDataTex = Texture::create1D(3,
             kInternalChannels.kDTreeEditData.mFormat, 1, 1, nullptr,
             kInternalChannels.kDTreeEditData.mBindflags);
-
-        auto& sPass = mSDTreeUpdatePasses.pBlitSTreePass;
-        sPass["BlitBuf"]["gNewTexSize"] = uint2(sTreeWidth, sTreeHeight);
-
-        sPass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
-        sPass[kInternalChannels.kSTreeData.mShaderName] = mTreeTextures.pSTreeTex;
-        sPass[kInternalChannels.kSTreeStatWeight.mShaderName] = mTreeTextures.pSTreeStatWeightTex;
-
-        sPass->execute(pRenderContext, uint3(sTreeWidth, sTreeHeight, 1));
-
-        auto& pass = mSDTreeUpdatePasses.pBlitDTreePass;
-        pass["BlitBuf"]["gOldRelevantTexSize"] = uint2(0, 0);
-        pass["BlitBuf"]["gNewTexSize"] = uint2(dTreeWidth, dTreeHeight);
-        pass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
-        pass[kInternalChannels.kDTreeChildren.mShaderName] = mTreeTextures.pDTreeChildrenTex;
-        pass[kInternalChannels.kDTreeParent.mShaderName] = mTreeTextures.pDTreeParentTex;
-        pass[kInternalChannels.kDTreeSize.mShaderName] = mTreeTextures.pDTreeSizeTex;
-
-        pass->execute(pRenderContext, uint3(dTreeWidth, dTreeHeight, 1));
-
-        mSDTreeUpdatePasses.pBlitDTreePass->addDefine("G_IS_NEW_TEX", "0", true);
-        return;
     }
-    /*if (mTreeTextures.pSTreeTex->getWidth() * mTreeTextures.pSTreeTex->getHeight() - 8 <= mpTree->getEstimatedSTreeSize())
-    {
-        uint currHeight = mTreeTextures.pSTreeTex->getHeight();
-        uint currWidth = mTreeTextures.pSTreeTex->getWidth();
-        uint newHeight = currHeight + kSDTreeTexIncrementHeight;
 
-        Texture::SharedPtr newTexture = Texture::create2D(currWidth, newHeight,
-            kInternalChannels.kSTreeData.mFormat, 1, 1, nullptr,
-            kInternalChannels.kSTreeData.mBindflags);
+    auto& sPass = mSDTreeUpdatePasses.pBlitSTreePass;
+    sPass["BlitBuf"]["gNewTexSize"] = uint2(sTreeWidth, sTreeHeight);
 
-        mSDTreeUpdatePasses.pBlitSTreePass["BlitBuf"]["gOldRelevantTexSize"] = uint2(currWidth, currHeight);
-        mSDTreeUpdatePasses.pBlitSTreePass["BlitBuf"]["gNewTexSize"] = uint2(currWidth, newHeight);
+    sPass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
+    sPass[kInternalChannels.kSTreeData.mShaderName] = mTreeTextures.pSTreeTex;
+    sPass[kInternalChannels.kSTreeStatWeight.mShaderName] = mTreeTextures.pSTreeStatWeightTex;
 
-        mSDTreeUpdatePasses.pBlitSTreePass[kInternalChannels.kSTreeData.mShaderName] = newTexture;
-        mSDTreeUpdatePasses.pBlitSTreePass["gOldSTreeData"] = mTreeTextures.pSTreeTex;
+    sPass->execute(pRenderContext, uint3(sTreeWidth, sTreeHeight, 1));
 
-        mSDTreeUpdatePasses.pBlitSTreePass->execute(pRenderContext, uint3(currWidth, newHeight, 1));
+    auto& pass = mSDTreeUpdatePasses.pBlitDTreePass;
+    pass["BlitBuf"]["gOldRelevantTexSize"] = uint2(0, 0);
+    pass["BlitBuf"]["gNewTexSize"] = uint2(dTreeWidth, dTreeHeight);
+    pass[kInternalChannels.kDTreeSums.mShaderName] = mTreeTextures.pDTreeSumsTex;
+    pass[kInternalChannels.kDTreeChildren.mShaderName] = mTreeTextures.pDTreeChildrenTex;
+    pass[kInternalChannels.kDTreeParent.mShaderName] = mTreeTextures.pDTreeParentTex;
+    pass[kInternalChannels.kDTreeSize.mShaderName] = mTreeTextures.pDTreeSizeTex;
 
-        mTreeTextures.pSTreeTex = newTexture;
-    }
-    if (mTreeTextures.pDTreeSumsTex->getHeight() - 4 <= mpTree->getEstimatedAmountOfDTrees())
-    {
-        uint currWidth = mTreeTextures.pDTreeSumsTex->getWidth();
-        uint currHalfWidth = mTreeTextures.pDTreeParentTex->getWidth();
-        uint currHeight = mTreeTextures.pDTreeSumsTex->getHeight();
-        uint newHeight = currHeight + kSDTreeTexIncrementHeight;
+    pass->execute(pRenderContext, uint3(dTreeWidth, dTreeHeight, 1));
 
-        Texture::SharedPtr newSumsTex = Texture::create2D(currWidth, newHeight,
-            kInternalChannels.kDTreeSums.mFormat, 1, 1, nullptr,
-            kInternalChannels.kDTreeSums.mBindflags);
-        Texture::SharedPtr newChildrenTex = Texture::create2D(currWidth, newHeight,
-            kInternalChannels.kDTreeChildren.mFormat, 1, 1, nullptr,
-            kInternalChannels.kDTreeChildren.mBindflags);
-        Texture::SharedPtr newParentTex = Texture::create2D(currHalfWidth, newHeight,
-            kInternalChannels.kDTreeParent.mFormat, 1, 1, nullptr,
-            kInternalChannels.kDTreeParent.mBindflags);
-        Texture::SharedPtr newSizeTex = Texture::create1D(newHeight,
-            kInternalChannels.kDTreeSize.mFormat, 1, 1, nullptr,
-            kInternalChannels.kDTreeSize.mBindflags);
-
-        mTreeTextures.pDTreeStatisticalWeightTex = Texture::create1D(newHeight,
-            kInternalChannels.kDTreeStatisticalWeight.mFormat, 1, 1, nullptr,
-            kInternalChannels.kDTreeStatisticalWeight.mBindflags);
-
-        auto& pass = mSDTreeUpdatePasses.pBlitDTreePass;
-        pass["BlitBuf"]["gOldRelevantTexSize"] = uint2(currWidth, currHeight);
-        pass["BlitBuf"]["gNewTexSize"] = uint2(currWidth, newHeight);
-        pass[kInternalChannels.kDTreeSums.mShaderName] = newSumsTex;
-        pass[kInternalChannels.kDTreeChildren.mShaderName] = newChildrenTex;
-        pass[kInternalChannels.kDTreeParent.mShaderName] = newParentTex;
-        pass[kInternalChannels.kDTreeSize.mShaderName] = newSizeTex;
-
-        pass["gOldDTreeSums"] = mTreeTextures.pDTreeSumsTex;
-        pass["gOldDTreeChildren"] = mTreeTextures.pDTreeChildrenTex;
-        pass["gOldDTreeParent"] = mTreeTextures.pDTreeParentTex;
-        pass["gOldDTreeSize"] = mTreeTextures.pDTreeSizeTex;
-
-        pass->execute(pRenderContext, uint3(currWidth, newHeight, 1));
-
-        mTreeTextures.pDTreeSumsTex = newSumsTex;
-        mTreeTextures.pDTreeChildrenTex = newChildrenTex;
-        mTreeTextures.pDTreeParentTex = newParentTex;
-        mTreeTextures.pDTreeSizeTex = newSizeTex;
-    }*/
+    mSDTreeUpdatePasses.pBlitDTreePass->addDefine("G_IS_NEW_TEX", "0", true);
+    return;
 }
 
 void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderData)
@@ -340,39 +342,11 @@ void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
     //std::cout << mpTree->getEstimatedAmountOfDTrees() << std::endl;
     //std::cout << mpTree->getEstimatedSTreeSize() << std::endl;
 
-    updateTreeTextures(pRenderContext);
-    /*if (mTreeRebuild)
+    auto pipelineRefreshed = renderData.getDictionary().getValue(kRenderPassRefreshFlags, RenderPassRefreshFlags::None);
+    if (mTreeTextures.pSTreeTex == nullptr || (mRenderSettings.resetSDTreeOnLightingChanges && pipelineRefreshed != RenderPassRefreshFlags::None))
     {
-        while (mCurrentlyUpdatingTree); // Wait for tree to be done (in a bad way)
-        mTreeRebuild = false;
-        std::cout << "Boom wordt nu exported naar textures" << std::endl;
-        AllocationData data = SDTreeTextureBuilder::buildSDTreeAsTextures(mpTree);
-        std::cout << "First STree node: " << *data.mSTreeTex << ", " << *(data.mSTreeTex + 1) << ", " << *(data.mSTreeTex+2) << ", " << *(data.mSTreeTex+3) << std::endl;
-        std::cout << "First DTree  sums node: " << *data.mDTreeSumsTex << ", " << *(data.mDTreeSumsTex+1) << ", " << *(data.mDTreeSumsTex+2) << ", " << *(data.mDTreeSumsTex+3) << std::endl;
-        std::cout << "First DTree  children node: " << *(data.mDTreeChildrenTex) << ", " << *(data.mDTreeChildrenTex+1) << std::endl;
-        std::cout << "Stree Texture size in cells: " << data.mSTreeTexSize.x * data.mSTreeTexSize.y << std::endl;
-        std::cout << "DTree Texture size in cells: " << data.mDTreeTexSize.x * data.mDTreeTexSize.y << std::endl;
-        mTreeTextures.pSTreeTex = Texture::create2D(data.mSTreeTexSize.x, data.mSTreeTexSize.y,
-            ResourceFormat::RGBA32Uint, 1, 1, data.mSTreeTex, kDefaultBindFlags);
-        mTreeTextures.pDTreeSumsTex = Texture::create2D(data.mDTreeTexSize.x, data.mDTreeTexSize.y,
-            ResourceFormat::RGBA32Float, 1, 1, data.mDTreeSumsTex, kDefaultBindFlags);
-        mTreeTextures.pDtreeChildrenTex = Texture::create2D(data.mDTreeTexSize.x, data.mDTreeTexSize.y,
-            ResourceFormat::RG32Uint, 1, 1, data.mDTreeChildrenTex, kDefaultBindFlags);
-
-        AllocationData dataBuilding = SDTreeTextureBuilder::buildSDTreeAsTextures(mpTree, DTreeType::D_TREE_TYPE_BUILDING);
-        mBuildingTreeTextures.pDTreeSumsTex = Texture::create2D(dataBuilding.mDTreeTexSize.x, dataBuilding.mDTreeTexSize.y,
-            kInternalChannels.kDTreeBuildingSums.mFormat, 1, 1, dataBuilding.mDTreeSumsTex,
-            kInternalChannels.kDTreeBuildingSums.mBindflags);
-        mBuildingTreeTextures.pDTreeChildrenTex = Texture::create2D(dataBuilding.mDTreeTexSize.x, dataBuilding.mDTreeTexSize.y,
-            kInternalChannels.kDTreeBuildingChildren.mFormat, 1, 1, dataBuilding.mDTreeChildrenTex,
-            kInternalChannels.kDTreeBuildingChildren.mBindflags);
-        mBuildingTreeTextures.pDTreeStatisticalWeightTex = Texture::create1D(dataBuilding.mDTreeTexSize.y,
-            kInternalChannels.kDTreeBuildingStatisticalWeight.mFormat, 1, 1, nullptr,
-            kInternalChannels.kDTreeBuildingStatisticalWeight.mBindflags);
-        mBuildingTreeTextures.pDTreeMutex = Texture::create2D(dataBuilding.mDTreeTexSize.x, dataBuilding.mDTreeTexSize.y,
-            kInternalChannels.kDTreeBuildingMutex.mFormat, 1, 1, nullptr,
-            kInternalChannels.kDTreeBuildingMutex.mBindflags);
-    }*/
+        updateTreeTextures(pRenderContext);
+    }
 
 
     uint2 screenSize = renderData.getDefaultTextureDims();
@@ -388,6 +362,7 @@ void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
             ResourceFormat::RGBA32Float, 1, 1, nullptr, kDefaultBindFlags);
     }
 
+    setTracingDefines();
     setStaticParams(mpPPGProg.get());
 
     if (mUseEmissiveSampler)
@@ -470,8 +445,8 @@ void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
     mpScene->raytrace(pRenderContext, mpPPGProg.get(), mpPPGVars, uint3(screenSize, 1));
 
     resetStatisticalWeight(pRenderContext);
-    pRenderContext->uavBarrier(mTreeTextures.pDTreeStatisticalWeightTex.get());
 
+    setDTreeRescaleDefines();
     rescaleTree(pRenderContext);
 
     splatIntoTree(pRenderContext, screenSize);
@@ -480,105 +455,9 @@ void PPGPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
 
     updateDTreeStructure(pRenderContext);
 
-    //updateSTreeStatWeight(pRenderContext);
+    updateSTreeStatWeight(pRenderContext);
 
-    //updateSTreeStructure(pRenderContext);
-
-    /*uint SWTWidth = mBuildingTreeTextures.pDTreeStatisticalWeightTex->getWidth();
-    mpResetStatisticalWeightPass[kInternalChannels.kDTreeBuildingStatisticalWeight.mShaderName] = mBuildingTreeTextures.pDTreeStatisticalWeightTex;
-    mpResetStatisticalWeightPass["ResetBuf"]["gAmountOfDTrees"] = SWTWidth;
-    mpResetStatisticalWeightPass->execute(pRenderContext, uint3(SWTWidth, 1, 1));
-
-    uint2 mutexTexSize = uint2(
-        mBuildingTreeTextures.pDTreeMutex->getWidth(),
-        mBuildingTreeTextures.pDTreeMutex->getHeight()
-    );
-    mpResetMutexPass[kInternalChannels.kDTreeBuildingMutex.mShaderName] = mBuildingTreeTextures.pDTreeMutex;
-    mpResetMutexPass["ResetBuf"]["gTextureSize"] = mutexTexSize;
-
-    pRenderContext->uavBarrier(mBuildingTreeTextures.pDTreeStatisticalWeightTex.get());
-
-    mpSplatIntoSDTreePass[kInternalChannels.kSTreeData.mShaderName] = mTreeTextures.pSTreeTex;
-    mpSplatIntoSDTreePass[kInternalChannels.kDTreeBuildingSums.mShaderName] = mBuildingTreeTextures.pDTreeSumsTex;
-    mpSplatIntoSDTreePass[kInternalChannels.kDTreeBuildingChildren.mShaderName] = mBuildingTreeTextures.pDTreeChildrenTex;
-    mpSplatIntoSDTreePass[kInternalChannels.kDTreeBuildingStatisticalWeight.mShaderName] = mBuildingTreeTextures.pDTreeStatisticalWeightTex;
-    mpSplatIntoSDTreePass[kInternalChannels.kDTreeBuildingMutex.mShaderName] = mBuildingTreeTextures.pDTreeMutex;
-
-    pRenderContext->uavBarrier(mSampleResultTextures.pPosTex.get());
-    pRenderContext->uavBarrier(mSampleResultTextures.pRadianceTex.get());
-    pRenderContext->uavBarrier(mSampleResultTextures.pDirPdfTex.get());
-
-    mpSplatIntoSDTreePass[kInternalChannels.kSamplePos.mShaderName] = mSampleResultTextures.pPosTex;
-    mpSplatIntoSDTreePass[kInternalChannels.kSampleRadiance.mShaderName] = mSampleResultTextures.pRadianceTex;
-    mpSplatIntoSDTreePass[kInternalChannels.kSampleDirPdf.mShaderName] = mSampleResultTextures.pDirPdfTex;
-
-    mpSplatIntoSDTreePass["SplatBuf"]["gScreenSize"] = screenSize;
-    mpSplatIntoSDTreePass["SplatBuf"]["gAmountOfSTreeNodesPerRow"] = mTreeTextures.pSTreeTex->getWidth();
-    mpSplatIntoSDTreePass["SplatBuf"]["gSceneMin"] = mpTree->aabb().mMin;
-    mpSplatIntoSDTreePass["SplatBuf"]["gSceneMax"] = mpTree->aabb().mMax;
-
-    mpSplatIntoSDTreePass->execute(pRenderContext, uint3(screenSize, 1));
-
-    mCurrentSamplesPerPixel += 1;
-
-    if (mCurrentSamplesPerPixel >= mMaxSamplesPerPixel)
-    {
-        DTreeTexData data;
-
-        pRenderContext->resourceBarrier(mBuildingTreeTextures.pDTreeSumsTex.get(), Resource::State::CopySource);
-        data.mDTreeSums = convertVector<float4>(
-            pRenderContext->readTextureSubresource(mBuildingTreeTextures.pDTreeSumsTex.get(), 0)
-        );
-        pRenderContext->resourceBarrier(mBuildingTreeTextures.pDTreeStatisticalWeightTex.get(), Resource::State::CopySource);
-        data.mDTreeStatisticalWeights = convertVector<uint>(
-            pRenderContext->readTextureSubresource(mBuildingTreeTextures.pDTreeStatisticalWeightTex.get(), 0)
-        );
-        data.mMaxDTreeSize = mBuildingTreeTextures.pDTreeSumsTex->getWidth();
-
-        updateDTreeBuilding(std::move(data));
-
-        mTreeRebuild = true;
-
-        //mMaxAmountOfSamples = std::numeric_limits<uint>::max();
-    }*/
-
-    //pRenderContext->uavBarrier(mSampleResultTextures.pRadianceTex.get());
-    //pRenderContext->uavBarrier(mSampleResultTextures.pDirPdfTex.get());
-    // Extract sample results and add them to the tree
-    
-    /*if (!mCurrentlyUpdatingTree /*&& mMaxAmountOfSamples < kMaxSamplesInSDTree*//*)
-    {
-        mCurrentlyUpdatingTree = true;
-        std::shared_ptr<TreeInfoTasks> tasks = std::shared_ptr<TreeInfoTasks>(new TreeInfoTasks());
-        //tasks->mpReadPosTask = pRenderContext->getReadTextureSubresourceThunk(renderData["sample1"]->asTexture().get(), 0)();
-        //tasks->mpReadRadianceTask = pRenderContext->getReadTextureSubresourceThunk(renderData["sample2"]->asTexture().get(), 0)();
-        //tasks->mpReadSamplePdfTask = pRenderContext->getReadTextureSubresourceThunk(renderData["sample3"]->asTexture().get(), 0)();
-
-        //tasks->mpReadPosTask = pRenderContext->getReadTextureSubresourceThunk(mSampleResultTextures.pPosTex.get(), 0)();
-        //tasks->mpReadRadianceTask = pRenderContext->getReadTextureSubresourceThunk(mSampleResultTextures.pRadianceTex.get(), 0)();
-        //tasks->mpReadSamplePdfTask = pRenderContext->getReadTextureSubresourceThunk(mSampleResultTextures.pDirPdfTex.get(), 0)();
-
-        //pRenderContext->uavBarrier(mSampleResultTextures.pPosTex.get());
-        pRenderContext->resourceBarrier(mSampleResultTextures.pPosTex.get(), Resource::State::CopySource);
-        tasks->mpReadPosTask = pRenderContext->readTextureSubresource(mSampleResultTextures.pPosTex.get(), 0);
-
-        //pRenderContext->uavBarrier(mSampleResultTextures.pRadianceTex.get());
-        pRenderContext->resourceBarrier(mSampleResultTextures.pRadianceTex.get(), Resource::State::CopySource);
-        tasks->mpReadRadianceTask = pRenderContext->readTextureSubresource(mSampleResultTextures.pRadianceTex.get(), 0);
-
-        //pRenderContext->uavBarrier(mSampleResultTextures.pDirPdfTex.get());
-        pRenderContext->resourceBarrier(mSampleResultTextures.pDirPdfTex.get(), Resource::State::CopySource);
-        tasks->mpReadSamplePdfTask = pRenderContext->readTextureSubresource(mSampleResultTextures.pDirPdfTex.get(), 0);
-        //tasks.mpReadPosTask = pRenderContext->asyncReadTextureSubresource(renderData["sample1"]->asTexture().get(), 0);
-        //tasks.mpReadRadianceTask = pRenderContext->asyncReadTextureSubresource(renderData["sample2"]->asTexture().get(), 0);
-        //tasks.mpReadSamplePdfTask = pRenderContext->asyncReadTextureSubresource(renderData["sample3"]->asTexture().get(), 0);
-        tasks->mSceneSize = mpTree->aabb().getExtents();
-
-        std::thread([this, tasks]() -> void
-            {
-                updateSDTree(tasks);
-            }).detach(); // TODO make thread joinable, otherwise errors will appear when changing scene
-    }*/
+    updateSTreeStructure(pRenderContext);
 
     endFrame(pRenderContext, renderData);
 }
@@ -650,9 +529,10 @@ void PPGPass::updateSTreeStatWeight(RenderContext* pRenderContext)
 {
     uint2 texSize;
 
+    setSTreeRescaleDefines();
     texSize.x = mTreeTextures.pSTreeStatWeightTex->getWidth();
     texSize.y = mTreeTextures.pSTreeStatWeightTex->getHeight();
-
+    
     auto& rescalePass = mSDTreeUpdatePasses.pRescaleSTreeStatWeightPass;
     rescalePass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
     rescalePass[kInternalChannels.kSTreeStatWeight.mShaderName] = mTreeTextures.pSTreeStatWeightTex;
@@ -673,13 +553,13 @@ void PPGPass::updateSTreeStructure(RenderContext* pRenderContext)
 {
     auto& buildPass = mSDTreeUpdatePasses.pUpdateSTreeStructurePass;
 
-    if (buildPass->getVars() == nullptr)
+    if (buildPass->getVars() == nullptr || mSettingsChanged.streeTresholdChanged)
     {
         for (auto& def : mpSampleGenerator->getDefines())
         {
             buildPass->addDefine(def.first, def.second, false);
         }
-        buildPass->addDefine("K_USELESS_DEFINE", "0", true);
+        setBuildSTreeDefines();
 
         bool success = mpSampleGenerator->setShaderData(buildPass->getRootVar());
         if (!success)
@@ -728,18 +608,20 @@ void PPGPass::updateDTreeStructure(RenderContext* pRenderContext)
     auto& resetPass = mSDTreeUpdatePasses.pResetFreedNodesPass;
 
     resetPass["ResetBuf"]["gTexSize"] = mTreeTextures.pDTreeFreedNodes->getWidth();
+    resetPass["gFreedNodes"] = mTreeTextures.pDTreeFreedNodes;
 
-    resetPass->execute(pRenderContext, uint3(mTreeTextures.pDTreeFreedNodes->getWidth()));
+    resetPass->execute(pRenderContext, uint3(mTreeTextures.pDTreeFreedNodes->getWidth(), 1, 1));
 
     auto& buildPass = mSDTreeUpdatePasses.pUpdateDTreeStructurePass;
 
-    if (buildPass->getVars() == nullptr)
+    if (buildPass->getVars() == nullptr || mSettingsChanged.dtreeTresholdChanged)
     {
         for (auto& def : mpSampleGenerator->getDefines())
         {
             buildPass->addDefine(def.first, def.second, false);
         }
-        buildPass->addDefine("K_USELESS_DEFINE", "0", true);
+
+        setBuildDTreeDefines();
 
         bool success = mpSampleGenerator->setShaderData(buildPass->getRootVar());
         if (!success)
@@ -774,14 +656,14 @@ void PPGPass::updateDTreeStructure(RenderContext* pRenderContext)
     dTreeCompressPass["gFreedNodes"] = mTreeTextures.pDTreeFreedNodes;
     dTreeCompressPass[kInternalChannels.kSTreeMetaData.mShaderName] = mTreeTextures.pSTreeMetaDataTex;
 
-    dTreeCompressPass->execute(pRenderContext, uint3(texSize, 1));
+    //dTreeCompressPass->execute(pRenderContext, uint3(texSize, 1));
 }
 
 void PPGPass::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene)
 {
     PathTracer::setScene(pRenderContext, pScene);
 
-    //mpWorkingThread = nullptr; // stop potentially running thread
+    mTreeTextures.pSTreeTex = nullptr; // reset one texture so all are recreated
 
     mpPPGVars = nullptr;
 
@@ -798,94 +680,28 @@ void PPGPass::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pS
 
 void PPGPass::renderUI(Gui::Widgets& widget)
 {
+    widget.checkbox("Reset acceleration structures when lighting options change", mRenderSettings.resetSDTreeOnLightingChanges);
+    auto tracingGroup = widget.group("Ray Tracing Settings");
+    mSettingsChanged.ppgSettingsChanged |= tracingGroup.checkbox("Use Next Event Estimation", mRenderSettings.evalDirectLight);
+    mSettingsChanged.ppgSettingsChanged |= tracingGroup.checkbox("Include first direct light bounce", mRenderSettings.includeFirstDirectBounce);
+    mSettingsChanged.ppgSettingsChanged |= tracingGroup.var("Amount of RIS candidate samples", mRenderSettings.amountOfRISSamples, 1u, 32u);
+    mSettingsChanged.ppgSettingsChanged |= tracingGroup.var("Max amount of bounces", mRenderSettings.maxBounces, 1u, 32u);
+    tracingGroup.release();
+
+    auto streeGroup = widget.group("STree Settings");
+    mSettingsChanged.streeFactorChanged |= streeGroup.var("STree rescale factor", mRenderSettings.streeFactor, 0.f, 1.f);
+    mSettingsChanged.streeTresholdChanged |= streeGroup.var("Stree split treshold", mRenderSettings.streeSplitTreshold, 1000.f, 1000000.f);
+    mSettingsChanged.streeTresholdChanged |= streeGroup.checkbox("Merge STree nodes", mRenderSettings.streeDoMerge);
+    if (mRenderSettings.streeDoMerge)
+        mSettingsChanged.streeTresholdChanged |= streeGroup.var("STree merge treshold", mRenderSettings.streeMergetreshold, 1000.f, 1000000.f);
+    streeGroup.release();
+
+    auto dtreeGroup = widget.group("DTree Settings");
+    mSettingsChanged.dtreeFactorChanged |= dtreeGroup.var("DTree rescale factor", mRenderSettings.dtreeFactor, 0.f, 1.f);
+    mSettingsChanged.dtreeTresholdChanged |= dtreeGroup.var("Max dtree depth", mRenderSettings.dtreeMaxDepth, 2u, 40u);
+    mSettingsChanged.dtreeTresholdChanged |= dtreeGroup.var("DTree split treshold", mRenderSettings.dtreeSplitTreshold, 0.f, 1.f);
+    mSettingsChanged.dtreeTresholdChanged |= dtreeGroup.checkbox("Merge DTree nodes", mRenderSettings.dtreeDoMerge);
+    if (mRenderSettings.dtreeDoMerge)
+        mSettingsChanged.dtreeTresholdChanged |= dtreeGroup.var("DTree merge treshold", mRenderSettings.dtreeMergeTreshold, 0.f, 1.f);
+    dtreeGroup.release();
 }
-
-/*std::vector<float4> convertVector(std::vector<uint8_t>& original)
-{
-    const size_t sizeOfSingleElem = sizeof(float4);
-    const size_t sizeOfFinalVec = original.size() / sizeOfSingleElem;
-    const size_t sizeInBytes = sizeOfFinalVec * sizeOfSingleElem;
-
-    float4* newData = new float4[sizeOfFinalVec];
-
-    std::memcpy(newData, original.data(), sizeInBytes);
-
-    auto res = std::vector<float4>(newData, newData + sizeOfFinalVec);
-
-    delete[] newData;
-
-    return res;
-}*/
-
-/*void PPGPass::updateSDTree(std::shared_ptr<TreeInfoTasks> tasks) // Will be used in parallel!!! TODO make thread-safe
-{
-    //std::vector<uint8_t> test = tasks.mpReadPosTask->getData();
-    //auto locationVec = convertVector(tasks.mpReadPosTask->getData());
-    //auto radianceVec = convertVector(tasks.mpReadRadianceTask->getData());
-    //auto dirPdfVec = convertVector(tasks.mpReadSamplePdfTask->getData());
-    std::vector<float4> locationVec = convertVector<float4>(tasks->mpReadPosTask);
-    std::vector<float4> radianceVec = convertVector<float4>(tasks->mpReadRadianceTask);
-    std::vector<float4> dirPdfVec = convertVector<float4>(tasks->mpReadSamplePdfTask);
-
-    uint localSampleCount = 0;
-
-    STree::SharedPtr tree = mpTree;
-    int64_t vecSize = static_cast<int64_t>(locationVec.size()); // Can't fail, as max size = 268435456 = 2^28
-
-#pragma omp parallel for shared(tree, locationVec, radianceVec, dirPdfVec) reduction(+: localSampleCount)
-    for (int64_t i = 0; i < vecSize; i++)
-    {
-        if (dirPdfVec[i].z < 0)
-            continue; // invalid sample, go on to the next
-
-        DTreeRecord rec;
-        rec.d = DTreeWrapper::canonicalToDir(dirPdfVec[i].xy);
-        rec.radiance = radianceVec[i].x + radianceVec[i].y + radianceVec[i].z;
-        rec.product = 0; // unused
-        rec.woPdf = dirPdfVec[i].z;
-        rec.bsdfPdf = 0; // unused
-        rec.dTreePdf = rec.woPdf;
-        rec.statisticalWeight = 1.f; // No weird direct lighting yet
-        rec.isDelta = false;
-
-        tree->record(locationVec[i].xyz, tasks->mSceneSize / 16.f, rec); // experiment with voxel size
-        localSampleCount++;
-    }
-    mCurrentSamplesPerPixel += localSampleCount;
-
-    if (mCurrentSamplesPerPixel >= mMaxSamplesPerPixel)
-    {
-        //mTreeUpdatePending = true;
-        rebuildTree();
-    }
-    mCurrentlyUpdatingTree = false;
-}*/
-
-/*void PPGPass::rebuildTree()
-{
-    mpTree->forEachDTreeWrapperParallel([](DTreeWrapper* dTree)
-        {
-            dTree->build();
-        });
-    mpTree->refine(static_cast<size_t>(12000) * static_cast<size_t>(std::sqrt(mMaxSamplesPerPixel)), std::min(12288, 5000));
-    // max size komt van 3 textures * 4 componenten * 4 bytes * 16000 * 16000 / 1000000
-    // 5000 komt van max gpu memory
-    mpTree->forEachDTreeWrapperParallel([](DTreeWrapper* dTree) // Reset all DTrees as well
-        {
-            dTree->reset(20, 0.01f);
-        });
-    
-    mMaxSamplesPerPixel *= 2;
-    mCurrentSamplesPerPixel = 0;
-    // Reset tree textures, they need to be rebuild
-    mTreeRebuild = true;
-    
-    //mTreeTextures.pDTreeSumsTex = nullptr;
-    //mTreeTextures.pDtreeChildrenTex = nullptr;
-}*/
-
-/*void PPGPass::updateDTreeBuilding(DTreeTexData data)
-{
-    SDTreeTextureBuilder::updateDTreeBuilding(data, mpTree);
-    rebuildTree();
-}*/

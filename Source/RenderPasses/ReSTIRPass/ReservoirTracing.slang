@@ -2,7 +2,7 @@
 
 import Scene.Raytracing;
 import Utils.Math.MathHelpers;
-import RenderPasses.Reservoir;
+import RenderPasses.Shared.Reservoir;
 import Experimental.Scene.Lights.EnvMap;
 import Experimental.Scene.Material.MaterialShading;
 

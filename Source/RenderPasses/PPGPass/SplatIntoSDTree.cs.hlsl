@@ -1,12 +1,15 @@
+#define G_2_BITMASK_RIGHT 0x00000003 // 0b0000.0000|0000.0000|0000.0000|0000.0011
+#define G_30_BITMASK_LEFT 0xFFFFFFFC // 0b1111.1111|1111.1111|1111.1111|1111.1100
+
 #define G_PI 3.141592653589793
 #define G_16_BITMASK_LEFT  0xFFFF0000
 #define G_16_BITMASK_RIGHT 0x0000FFFF
 
 RWTexture2D<float4> gDTreeSums;
-RWTexture2D<uint2> gDTreeChildren;
+Texture2D<uint2> gDTreeChildren;
 RWTexture1D<uint> gDTreeStatisticalWeight;
 //RWTexture2D<uint> gDTreeBuildingMutex;
-RWTexture2D<uint4> gSTreeData; // x: DTreeIndex, y: axis, zw: child indices
+Texture2D<uint4> gSTreeData; // x: DTreeIndex, y: axis, zw: child indices
 
 // pos (x, y, y) (relative)
 Texture2D<float4> gSamplePos;
@@ -28,62 +31,25 @@ cbuffer SplatBuf
     uint _padding2;
 };
 
-/*struct Mutex
-{
-    uint2 mTexelPos;
-    uint mIsAquired;
-
-    [mutating]void aquire()
-    {
-        if (mIsAquired)
-            return;
-        mIsAquired = true;
-        uint original = 1;
-        while (original == 1)
-            InterlockedCompareExchange(gDTreeBuildingMutex[mTexelPos], 0, 1, original);
-    }
-
-    [mutating]void release()
-    {
-        if (!mIsAquired)
-            return;
-        mIsAquired = false;
-        uint _original;
-        InterlockedExchange(gDTreeBuildingMutex[mTexelPos], 0, _original);
-    }
-};*/
-
-/*Mutex buildMutex(uint dTreeIndex, uint nodeIndex)
-{
-    Mutex res;
-    res.mTexelPos = uint2(nodeIndex, dTreeIndex);
-    res.mIsAquired = false;
-}*/
-
 struct DTreeNode
 {
-    // if mSums == (0, 0, 0, 0), then node is empty
-    float4 mSums;
     uint2 mChildren;
     uint2 mTexelPos;
 
-    // Encode a leaf as a node with child indices 0 (which is the root)
-    bool isLeaf()
-    {
-        return all(mChildren == 0);
-    }
-
     uint getChildIndex(uint localIndex)
     {
-        uint packedData = localIndex <= 1 ? mChildren.x : mChildren.y;
-        return localIndex & 1 ? packedData & G_16_BITMASK_RIGHT : packedData >> 16;
+        uint packedData = (localIndex <= 1) ? mChildren.x : mChildren.y;
+        return (localIndex & 1) ? (packedData & G_16_BITMASK_RIGHT) : (packedData >> 16);
+    }
+
+    // Encode a leaf as a node with index 0
+    bool isLeaf(uint relativeIndex)
+    {
+        return getChildIndex(relativeIndex) == 0;
     }
 
     void addToSum(uint localChildIndex, float toAdd)
     {
-        //float4 newVal = float4(0.f);
-        //newVal[localChildIndex] = toAdd;
-
         switch (localChildIndex)
         {
             case 0:
@@ -107,16 +73,6 @@ struct DTreeNode
                 break;
             }
         }
-
-        //uint original;
-        //do
-        //{
-        //    InterlockedCompareExchange(gDTreeBuildingMutex[mTexelPos], 0, 1, original);
-        //} while (original == 1)
-
-        //gDTreeSums[mTexelPos] += newVal;
-
-        //InterlockedExchange(gDTreeBuildingMutex[mTexelPos], 0, original);
     }
 };
 
@@ -146,6 +102,16 @@ struct STreeNode
     bool isLeaf()
     {
         return all(mChildren == 0);
+    }
+
+    uint getAxis()
+    {
+        return mAxis & G_2_BITMASK_RIGHT;
+    }
+
+    uint getParent()
+    {
+        return (mAxis & G_30_BITMASK_LEFT) >> 2;
     }
 };
 
@@ -191,11 +157,10 @@ uint getDTreeIndex(float3 loc, float3 min, float3 size, STreeNode node)
 {
     while (!node.isLeaf())
     {
-        size[node.mAxis] /= 2;
-        uint index = loc[node.mAxis] < min[node.mAxis] + size[node.mAxis] ? 0 : 1;
-        //index = 1 - index;
+        size[node.getAxis()] /= 2;
+        uint index = loc[node.getAxis()] < min[node.getAxis()] + size[node.getAxis()] ? 0 : 1;
         if (index == 1)
-            min[node.mAxis] += size[node.mAxis];
+            min[node.getAxis()] += size[node.getAxis()];
 
         node = buildSTreeNode(node.mChildren[index]);
     }
@@ -205,9 +170,6 @@ uint getDTreeIndex(float3 loc, float3 min, float3 size, STreeNode node)
 void updateDTreeSums(uint dTreeIndex, float2 dir, float toAdd)
 {
     DTreeNode node = buildDTreeNode(dTreeIndex, 0);
-    //dir = dirToCanonical(canonicalToDir(dir));
-    //Mutex mutex = buildMutex(dTreeIndex, 0);
-    // dir = float2(1.f) - dir;
     bool valid = true;
     uint absoluteChildIndex = 0;
     uint relativeChildIndex = 0;
@@ -215,11 +177,6 @@ void updateDTreeSums(uint dTreeIndex, float2 dir, float toAdd)
     {
         relativeChildIndex = decentIntoDTree(dir);
         absoluteChildIndex = node.getChildIndex(relativeChildIndex);
-        
-        //uint2 texelPos = uint2(absoluteChildIndex, dTreeIndex);
-        
-        //mutex.aquire();
-        //mutex.release();
         
         if (absoluteChildIndex == 0)
             valid = false;

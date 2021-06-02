@@ -63,7 +63,20 @@ void ResetPipelinePass::execute(RenderContext* pRenderContext, const RenderData&
 {
     if (!mHasScene)
         return;
-    if (mFrameIndex >= mMaxFrames)
+    if (mUseRegularIntervals)
+    {
+        if (mFrameIndex >= mFrameInterval)
+        {
+            mFrameIndex = 1;
+            auto currentFlags = renderData.getDictionary().getValue(kRenderPassRefreshFlags, RenderPassRefreshFlags::None);
+            renderData.getDictionary()[kRenderPassRefreshFlags] = currentFlags | RenderPassRefreshFlags::RenderOptionsChanged;
+        }
+        else
+        {
+            mFrameIndex++;
+        }
+    }
+    else if (mFrameIndex >= mMaxFrames)
     {
         mFrameIndex = 0;
         mMaxFrames++;
@@ -78,6 +91,11 @@ void ResetPipelinePass::execute(RenderContext* pRenderContext, const RenderData&
 
 void ResetPipelinePass::renderUI(Gui::Widgets& widget)
 {
+    widget.checkbox("Reset after regular intervals", mUseRegularIntervals);
+    if (mUseRegularIntervals)
+    {
+        widget.var("Frame interval", mFrameInterval, 0u, 1000u);
+    }
 }
 
 void ResetPipelinePass::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene)

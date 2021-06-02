@@ -15,7 +15,7 @@ RWTexture1D<uint2> gDTreeEditData;
 uint updateDTreeIndex(uint oldIndex)
 {
     uint2 deletedDTrees = gDTreeEditData[2];
-    deletedDTrees = oldIndex > deletedDTrees ? 1 : 0;
+    deletedDTrees = (0 < deletedDTrees && deletedDTrees < oldIndex) ? 1 : 0;
     return oldIndex - (deletedDTrees.x + deletedDTrees.y);
 }
 
@@ -49,6 +49,8 @@ void main( uint3 DTid : SV_DispatchThreadID )
         oldParent = gDTreeParent[uint2(DTid.x / 2.f, DTid.y)];
     if (DTid.x == 0)
         oldSize = gDTreeSize[DTid.y];
+    if (DTid.y != 0 && any(gDTreeEditData[2] == DTid.y)) // We are deleted
+        return;
 
     DeviceMemoryBarrier();
 

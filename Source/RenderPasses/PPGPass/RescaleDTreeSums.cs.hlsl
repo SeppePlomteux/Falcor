@@ -1,4 +1,4 @@
-#define K_SCALE_FACTOR 0.9881813556f
+//#define K_SCALE_FACTOR 0.9882f
 
 RWTexture2D<float4> gDTreeSums;
 

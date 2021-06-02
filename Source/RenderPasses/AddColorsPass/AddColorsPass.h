@@ -31,10 +31,10 @@
 
 using namespace Falcor;
 
-class ResetPipelinePass : public RenderPass
+class AddColorsPass : public RenderPass
 {
 public:
-    using SharedPtr = std::shared_ptr<ResetPipelinePass>;
+    using SharedPtr = std::shared_ptr<AddColorsPass>;
 
     /** Create a new render pass object.
         \param[in] pRenderContext The render context.
@@ -42,25 +42,21 @@ public:
         \return A new object, or an exception is thrown if creation failed.
     */
     static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
-    static char description[];
 
-    virtual std::string getDesc() override { return description; }
+    virtual std::string getDesc() override;
     virtual Dictionary getScriptingDictionary() override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
     virtual void compile(RenderContext* pContext, const CompileData& compileData) override {}
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
-    virtual void setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene) override;
+    virtual void setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene) override {}
     virtual bool onMouseEvent(const MouseEvent& mouseEvent) override { return false; }
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override { return false; }
 
 private:
-    ResetPipelinePass() = default;
+    AddColorsPass();
 
-    bool mHasScene = false;
-    uint mFrameIndex = 0;
-    uint mMaxFrames = 1;
+    ComputePass::SharedPtr mpAddPass;
 
-    bool mUseRegularIntervals = false;
-    uint mFrameInterval = 100;
+    bool mIgnoreNonFiniteVals = false;
 };

@@ -59,6 +59,13 @@ struct SceneLightSample
     float   rayDistance;    ///< Ray distance for visibility evaluation. This may differ from 'distance' due to ray offsets.
 };
 
+struct ReservoirLightSample
+{
+    float3 samplePos;
+    float pdf;
+    float3 Li;
+};
+
 /** Evaluates the background in a particular direction.
     This function should be called for screen-space samples that missed the scene.
     The result should not be used as lighting, use evalDistantLight() instead.
@@ -168,6 +175,154 @@ float evalPdfScatter(const ShadingData sd, const float3 dir)
 
         return NdotL * M_1_PI; // pdf = cos(theta) / pi
     }
+}
+
+/** Samples a light source in the scene.
+    This function first stochastically selects a type of light source to sample,
+    and then calls that the sampling function for the chosen light type.
+    \param[in] params PathTracer parameters.
+    \param[in] envMapSampler Environment map sampler.
+    \param[in] emissiveSampler Emissive light sampler.
+    \param[in] sd Shading data.
+    \param[in] rayOrigin Ray origin for the shadow ray.
+    \param[in] numSamples Total number of light samples that will be taken. This is needed for the MIS weighting.
+    \param[in,out] sg SampleGenerator object.
+    \param[out] ls Generated light sample. Only valid if true is returned.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleSceneLightsReservoir<S : ISampleGenerator>(const PathTracerParams params, const EnvMapSampler envMapSampler, const EmissiveLightSampler emissiveSampler, const ShadingData sd, const float3 rayOrigin, const uint numSamples, inout S sg, out ReservoirLightSample ls)
+{
+    // Set relative probabilities of the different sampling techniques.
+    // TODO: These should use estimated irradiance from each light type. Using equal probabilities for now.
+    // TODO: Refactor the selection pdf code the helpers above for evaluating the individual probabilities.
+    float p[3];
+    p[0] = kUseEnvLight ? 1.f : 0.f;
+    p[1] = kUseAnalyticLights ? 1.f : 0.f;
+    p[2] = kUseEmissiveLights ? 1.f : 0.f;
+    //p[0] = 0;
+    //p[1] = 0;
+    //p[2] = 0;
+    // Normalize probabilities. Early out if zero.
+    float sum = p[0] + p[1] + p[2];
+    if (sum == 0.f)
+        return false;
+
+    float invSum = 1.f / sum;
+    p[0] *= invSum;
+    p[1] *= invSum;
+    p[2] *= invSum;
+
+    // Sample based on uniform random number. Rescale u to [0,1) afterwards.
+    float invPdf = 0.f;
+    float u = sampleNext1D(sg);
+
+    // We use explicit checks for which light types are enabled so that the compiler
+    // can remove the unused code. It won't otherwise since u is unknown at compile time.
+    if (kUseEnvLight)
+    {
+        if (u < p[0])
+        {
+            float selectionPdf = p[0];
+
+            // Sample environment map.
+            EnvMapSample lightSample;
+            envMapSampler.sample(sampleNext2D(sg), lightSample);
+
+            // Reject sample if lower hemisphere.
+            if (dot(sd.N, lightSample.dir) < kMinCosTheta)
+                return false;
+
+            // Evaluate MIS with BRDF sampling as the other sampling strategy.
+            float pdf = selectionPdf * lightSample.pdf;
+            float misWeight = 1.f;
+            if (kUseMIS && pdf > 0.f)
+            {
+                float brdfPdf = evalPdfScatter(sd, lightSample.dir);
+                misWeight = evalMIS(params, numSamples, pdf, 1, brdfPdf);
+            }
+
+            // Setup returned sample.
+            ls.pdf = pdf;
+            //ls.Li = pdf > 0.f ? lightSample.Le * misWeight / (numSamples) : float3(0);
+            ls.Li = pdf > 0.f ? lightSample.Le * misWeight : float3(0);
+            ls.samplePos = rayOrigin + 1e10 * lightSample.dir;
+
+            return true;
+        }
+        u -= p[0];
+    }
+
+    if (kUseAnalyticLights)
+    {
+        if (u < p[1])
+        {
+            // Sample analytic light source selected uniformly from the light list.
+            // TODO: Sample based on estimated contributions as pdf.
+            u /= p[1]; // Rescale to [0,1)
+            uint lightCount = gScene.getLightCount();
+            uint lightIndex = min(uint(u * lightCount), lightCount - 1);
+            float selectionPdf = p[1] / lightCount; // TODO: Precompute 1.f/lightCount in cbuffer
+
+            // Sample local light source.
+            AnalyticLightSample lightSample;
+            bool valid = sampleLight(rayOrigin, gScene.getLight(lightIndex), sg, lightSample);
+
+            // Reject sample if lower hemisphere.
+            if (!valid || dot(sd.N, lightSample.dir) < kMinCosTheta)
+                return false;
+
+            // Setup returned sample.
+            // Analytic lights do not currently have a geometric representation in the scene.
+            // Do not worry about adjusting the ray to avoid self-intersections at the light.
+            float lightPDF = lightSample.pdf == 0 ? 1 : lightSample.pdf;
+            ls.pdf = selectionPdf * lightPDF;
+            //ls.Li = lightSample.Li * lightPDF / (numSamples); // Keik na dat lightSample.Li pdf bevat of niet
+            ls.Li = lightSample.Li * lightPDF; // Keik na dat lightSample.Li pdf bevat of niet
+            ls.samplePos = any(lightSample.posW) ? lightSample.posW : rayOrigin + min(lightSample.distance, 100) * lightSample.dir;
+            
+            return true;
+        }
+        u -= p[1];
+    }
+
+    if (kUseEmissiveLights)
+    {
+        //if (u < p[2]) // Always true
+        {
+            float selectionPdf = p[2];
+
+            // Sample emissive lights.
+            TriangleLightSample lightSample;
+            bool valid = emissiveSampler.sampleLight(rayOrigin, sd.N, true, sg, lightSample);
+
+            // Reject sample if lower hemisphere.
+            if (!valid || dot(sd.N, lightSample.dir) < kMinCosTheta)
+                return false;
+
+            // Evaluate MIS with BRDF sampling as the other sampling strategy.
+            float pdf = selectionPdf * lightSample.pdf;
+            float misWeight = 1.f;
+            if (kUseMIS && pdf > 0.f)
+            {
+                float brdfPdf = evalPdfScatter(sd, lightSample.dir);
+                misWeight = evalMIS(params, numSamples, pdf, 1, brdfPdf);
+            }
+
+            // Compute offset light sample position to reduce self-intersections at the light.
+            // We compute the shadow ray parameters based on the offset position.
+            float3 offsetPos = computeRayOrigin(lightSample.posW, lightSample.normalW);
+
+            // Setup returned sample.
+            ls.pdf = pdf;
+            //ls.Li = pdf > 0.f ? lightSample.Le * misWeight / (numSamples) : float3(0);
+            ls.Li = pdf > 0.f ? lightSample.Le * misWeight : float3(0);
+            ls.samplePos = offsetPos;
+
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /** Samples a light source in the scene.

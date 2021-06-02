@@ -186,6 +186,7 @@
     <ShaderSource Include="RenderPasses\Shared\PathTracer\RayFootprintData.slang" />
     <ShaderSource Include="RenderPasses\Shared\PathTracer\RayFootprintModes.slangh" />
     <ShaderSource Include="RenderPasses\Shared\PathTracer\StaticParams.slang" />
+    <ShaderSource Include="RenderPasses\Shared\Reservoir.slang" />
     <ShaderSource Include="Scene\Animation\Skinning.slang" />
     <ShaderSource Include="Scene\Camera\Camera.slang" />
     <ShaderSource Include="Scene\Camera\CameraData.slang" />

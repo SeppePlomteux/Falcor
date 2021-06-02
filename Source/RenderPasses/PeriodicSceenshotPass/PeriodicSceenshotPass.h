@@ -31,10 +31,10 @@
 
 using namespace Falcor;
 
-class ResetPipelinePass : public RenderPass
+class PeriodicSceenshotPass : public RenderPass
 {
 public:
-    using SharedPtr = std::shared_ptr<ResetPipelinePass>;
+    using SharedPtr = std::shared_ptr<PeriodicSceenshotPass>;
 
     /** Create a new render pass object.
         \param[in] pRenderContext The render context.
@@ -42,9 +42,8 @@ public:
         \return A new object, or an exception is thrown if creation failed.
     */
     static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
-    static char description[];
 
-    virtual std::string getDesc() override { return description; }
+    virtual std::string getDesc() override;
     virtual Dictionary getScriptingDictionary() override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
     virtual void compile(RenderContext* pContext, const CompileData& compileData) override {}
@@ -55,12 +54,12 @@ public:
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override { return false; }
 
 private:
-    ResetPipelinePass() = default;
+    PeriodicSceenshotPass();
 
-    bool mHasScene = false;
-    uint mFrameIndex = 0;
-    uint mMaxFrames = 1;
-
-    bool mUseRegularIntervals = false;
-    uint mFrameInterval = 100;
+    bool mHasAScene;
+    uint mFrameIndex;
+    uint mAmountOfFrames = 100;
+    uint mScreenshotIndex = 0;
+    std::string mFolder;
+    std::string mFilePrefix;
 };

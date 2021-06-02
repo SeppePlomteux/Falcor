@@ -1649,5 +1649,8 @@
     <ShaderSource Include="Utils\Sampling\AliasTable.slang">
       <Filter>Utils\Sampling</Filter>
     </ShaderSource>
+    <ShaderSource Include="RenderPasses\Shared\Reservoir.slang">
+      <Filter>RenderPasses\Shared</Filter>
+    </ShaderSource>
   </ItemGroup>
 </Project>

@@ -194,6 +194,7 @@ namespace Falcor
         Sample s(pRenderer);
         try
         {
+            s.mClock.setFramerate(60); // DIZ IS NEW
             s.runInternal(config, argc, argv);
         }
         catch (const std::exception & e)
@@ -208,6 +209,7 @@ namespace Falcor
         Sample s(pRenderer);
         try
         {
+            s.mClock.setFramerate(60); // DIZ IS NEW
             auto err = [filename](std::string_view msg) {logError("Error in Sample::Run(). '" + filename + "' " + msg); };
 
             s.startScripting(); // We have to do that before running the script

@@ -11,7 +11,7 @@ import Experimental.Scene.Material.MaterialShading;
 import Experimental.Scene.Lights.LightHelpers;
 
 import RenderPasses.Shared.PathTracer.PathTracerHelpers;
-import RenderPasses.Reservoir;
+import RenderPasses.Shared.Reservoir;
 
 // Inputs
 Texture2D<float4> shWorldPos;

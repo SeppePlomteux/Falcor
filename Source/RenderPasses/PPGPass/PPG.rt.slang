@@ -1,7 +1,13 @@
+#define G_2_BITMASK_RIGHT 0x00000003 // 0b0000.0000|0000.0000|0000.0000|0000.0011
+#define G_30_BITMASK_LEFT 0xFFFFFFFC // 0b1111.1111|1111.1111|1111.1111|1111.1100
+
 #define G_PI 3.141592653589793
 #define G_16_BITMASK_LEFT  0xFFFF0000
 #define G_16_BITMASK_RIGHT 0x0000FFFF
 
+//#define K_EVAL_DIRECT 0
+//#define K_EVAL_FIRST_DIRECT_BOUNCE 1
+//#define K_HEMISPHERE_SAMPLE_ITERATIONS 8
 
 /*import Scene.Raytracing;
 import Utils.Math.MathHelpers;
@@ -17,8 +23,9 @@ import Utils.Sampling.SampleGenerator;
 import RenderPasses.Shared.PathTracer.PathTracerHelpers;
 //import Scene.Scene;
 import Scene.Raytracing; // contains HitShaderParams
-//import Scene.HitInfo;
+import Scene.HitInfo;
 import RenderPasses.Shared.PathTracer.RayFootprint;
+import PPGReservoir;
 
 Texture2D<float4> gDTreeSums;
 // |ch0ch1| |ch2ch3|
@@ -74,8 +81,8 @@ struct ShadowRayPayload
 
 struct ScatterRayPayload // In total 80 bytes
 {
-    //uint2 mPackedHitInfoData;
-    float3 mThrouhgput; // 12 bytes
+    PackedHitInfo mPackedHitInfoData;
+    /*float3 mThrouhgput; // 12 bytes
     uint mSampleTreeIndex; // 4 bytes
     float3 mLTotal;
     uint mSampleNodeIndex;
@@ -83,7 +90,16 @@ struct ScatterRayPayload // In total 80 bytes
     uint mEvalEmissive;
     float3 mNextSampleDir;
     float mSamplePdf;
-    SampleGenerator mSampleGenerator; // max 16 Bytes
+    SampleGenerator mSampleGenerator; // max 16 Bytes*/
+};
+
+struct MyPathData
+{
+    float3 mThroughput;
+    float mSamplePdf;
+    float3 mLTotal;
+    float3 mCurrentRayOrigin;
+    float3 mCurrentRayDir;
 };
 
 struct DTreeNode
@@ -135,6 +151,16 @@ struct STreeNode
     {
         return all(mChildren == 0);
     }
+
+    uint getAxis()
+    {
+        return mAxis & G_2_BITMASK_RIGHT;
+    }
+
+    uint getParent()
+    {
+        return (mAxis & G_30_BITMASK_LEFT) >> 2;
+    }
 };
 
 STreeNode buildSTreeNode(uint nodeIndex)
@@ -185,12 +211,14 @@ struct HemisphereSample
     }
 };
 
-float calc_pdf(float2 p, const uint dTreeIndex, DTreeNode node)
+float calc_pdf(float2 p, const uint dTreeIndex, DTreeNode node, out float radianceEstimate)
 {
     const uint kMaxIters = 30; // Max DTree depth is 20, so no problem
     bool keepGoing = true;
     float res = 1;
+    float sterradians = 4.f * G_PI;
     uint i = 0;
+    uint relIndex;
     while (keepGoing)
     {
         float sum = node.mSums.x + node.mSums.y + node.mSums.z + node.mSums.w;
@@ -200,10 +228,11 @@ float calc_pdf(float2 p, const uint dTreeIndex, DTreeNode node)
             break;
         }
         
-        uint relIndex = decentIntoDTree(p);
+        relIndex = decentIntoDTree(p);
         uint absIndex = node.getChildIndex(relIndex);
         
         res *= 4 * node.mSums[relIndex] / sum;
+        sterradians /= 4.f;
         
         if (absIndex == 0)
             keepGoing = false;
@@ -211,14 +240,16 @@ float calc_pdf(float2 p, const uint dTreeIndex, DTreeNode node)
             node = buildDTreeNode(dTreeIndex, absIndex);
     }
     res = res / (4 * G_PI);
+    radianceEstimate = node.mSums[relIndex] / sterradians;
     return res;
 }
 
-HemisphereSample sampleDTree(uint treeIndex, DTreeNode currNode, SampleGenerator sg)
+HemisphereSample sampleDTree(uint treeIndex, DTreeNode currNode, inout SampleGenerator sg, out float radianceEstimate)
 {
     bool keepGoing = true;
     float offsetFactor = 1.f;
-    uint absIndex = 0;
+    float steradians = 4.f * G_PI;
+    uint absIndex = 0, relIndex;
     HemisphereSample res;
     res.mSample = float2(0.f, 0.f);
     res.pdf = 1;
@@ -238,12 +269,13 @@ HemisphereSample sampleDTree(uint treeIndex, DTreeNode currNode, SampleGenerator
         
         rand *= cummulativeSums.w;
         uint4 indexHelper = cummulativeSums <= rand ? 1u : 0u;
-        uint relIndex = indexHelper.x + indexHelper.y + indexHelper.z + indexHelper.w;
+        relIndex = indexHelper.x + indexHelper.y + indexHelper.z + indexHelper.w;
         absIndex = currNode.getChildIndex(relIndex);
 
         res.pdf *= 4 * currNode.mSums[relIndex] / cummulativeSums.w;
+        steradians /= 4;
 
-        float2 relOffset = float2(relIndex & 1 ? 0.5f : 0.f, relIndex & 2 ? 0.5f : 0.f);
+        float2 relOffset = float2((relIndex & 1) ? 0.5f : 0.f, (relIndex & 2) ? 0.5f : 0.f);
         res.mSample = mad(offsetFactor, relOffset, res.mSample);
         offsetFactor *= 0.5f;
         
@@ -256,53 +288,56 @@ HemisphereSample sampleDTree(uint treeIndex, DTreeNode currNode, SampleGenerator
     }
     res.mSample = saturate(mad(offsetFactor, sampleNext2D(sg), res.mSample));
     res.pdf = res.pdf / (4 * G_PI);
+    radianceEstimate = currNode.mSums[relIndex] / steradians;
     return res;
 }
 
-/*float2 sampleDTree(uint treeIndex, DTreeNode currNode, SampleGenerator sg)
+float sum(const float3 components)
 {
-    float factor = 1.f; // was 0.5f
-    float2 res = float2(0.f);
-    while (!currNode.isLeaf())
+    return components.x + components.y + components.z;
+}
+
+HemisphereSample sampleHemisphere(uint treeIndex, const ShadingData sd, inout SampleGenerator sg)
+{
+    Reservoir r = createEmptyReservoir();
+    DTreeNode node = buildDTreeNode(treeIndex, 0);
+    
+    float3 sampleAsDir;
+    float radianceEstimate;
+    float bsdfPdf, treePdf, targetPdf;
+    // Loop because both calc_pdf and sampleDTree are large functions
+    [loop]
+    for (int i = 0; i < K_HEMISPHERE_SAMPLE_ITERATIONS; i++)
     {
-        float rand = sampleNext1D(sg);
-        float4 sums = currNode.mSums;
-        sums.y = sums.x + sums.y;
-        sums.z = sums.y + sums.z;
-        sums.w = sums.z + sums.w;
-        if (sums.w == 0.f)
-            break;
-        rand *= sums.w;
-        sums = sums <= rand ? 1u : 0u;
-        uint index = sums.x + sums.y + sums.z + sums.w;
-        float2 origin = float2(index & 1 ? 0.5 : 0, index & 2 ? 0.5 : 0);
-        res = mad(factor, origin, res); // factor*origin + res
-        factor *= .5f;
-        
-        if (currNode.getChildIndex(index) == 0)
+        if (sampleNext1D(sg) < 0.5f)
         {
-            break;
+            BSDFSample bsdfSample = { };
+            bool valid = sampleBSDF(sd, sg, bsdfSample);
+            sampleAsDir = bsdfSample.wi;
+            treePdf = valid ? calc_pdf(dirToCanonical(bsdfSample.wi), treeIndex, node, radianceEstimate) : 1;
+            bsdfPdf = valid ? bsdfSample.pdf : 1;
+            targetPdf = valid ? sum(bsdfSample.weight) * bsdfSample.pdf * max(radianceEstimate, 1e-3) : 0;
         }
-        
-        currNode = buildDTreeNode(treeIndex, currNode.getChildIndex(index));
+        else
+        {
+            HemisphereSample treeSample = sampleDTree(treeIndex, node, sg, radianceEstimate);
+            sampleAsDir = normalize(treeSample.getSampleAsDir());
+            bsdfPdf = evalPdfBSDF(sd, sampleAsDir);
+            treePdf = treeSample.pdf;
+            targetPdf = sum(evalBSDFCosine(sd, sampleAsDir)) * max(radianceEstimate, 1e-3);
+        }
+        float candidatePdf = 0.5f * bsdfPdf + 0.5f * treePdf;
+        float weight = (candidatePdf > 0) ? (targetPdf / candidatePdf) : 0;
+        r.addToReservoir(sampleAsDir, targetPdf, weight, sg);
     }
 
-    return mad(factor, sampleNext2D(sg), res);
-    
+    HemisphereSample hemSample = { };
+    hemSample.mSample = dirToCanonical(r.mSample);
+    hemSample.pdf = r.mTargetPdf * rcp(r.getMCCorrectingFactor());
+    return hemSample;
+}
 
-    /*DTreeNode nextNode = buildDTreeNode(treeIndex, currNode.getChildIndex(index));
-    
-    if (nextNode.isLeaf())
-    {
-        return origin + 0.5f * float2(0.f); // Generate random 2D number here (at space of 0)
-    }
-    else
-    {
-        return origin + 0.5f * sampleDTree(treeIndex, nextNode);
-    }
-}*/
-
-HemisphereSample sampleDTree(uint treeIndex, SampleGenerator sg)
+HemisphereSample sampleDTree(uint treeIndex, const ShadingData sd, inout SampleGenerator sg)
 {
     // check if tree is empty, if so, return uniformly random number
     DTreeNode node = buildDTreeNode(treeIndex, 0);
@@ -314,22 +349,22 @@ HemisphereSample sampleDTree(uint treeIndex, SampleGenerator sg)
         res.pdf = 0.25 / G_PI;
         return res;
     }
-    const float uniformPdfProbability = 0.1f;
-    float rand = sampleNext1D(sg);
+    //const float uniformPdfProbability = 0.f;
+    //float rand = sampleNext1D(sg);
     HemisphereSample res;
-    if (rand < uniformPdfProbability)
+    /*if (rand < uniformPdfProbability)
     {
         res.mSample = sampleNext2D(sg);
         //res.pdf = 1; // nee dus
         res.pdf = (1 - uniformPdfProbability) *
             calc_pdf(res.mSample, treeIndex, buildDTreeNode(treeIndex, 0)) +
             0.25 * uniformPdfProbability / G_PI;
-    }
-    else
-    {
-        res = sampleDTree(treeIndex, buildDTreeNode(treeIndex, 0), sg);
-        res.pdf = (1 - uniformPdfProbability) * res.pdf + 0.25 * uniformPdfProbability / G_PI;
-    }
+    }*/
+    //else
+    //{
+        res = sampleHemisphere(treeIndex, sd, sg);
+        res.pdf = /*(1 - uniformPdfProbability) **/ res.pdf /*+ 0.25 * uniformPdfProbability / G_PI*/;
+    //}
     return res;
 }
 
@@ -337,14 +372,14 @@ uint sampleSTree(float3 loc, float3 min, float3 size, STreeNode node)
 {
     while (!node.isLeaf())
     {
-        size[node.mAxis] /= 2;
-        uint index = loc[node.mAxis] < min[node.mAxis] + size[node.mAxis] ? 0 : 1;
+        size[node.getAxis()] /= 2;
+        uint index = loc[node.getAxis()] < min[node.getAxis()] + size[node.getAxis()] ? 0 : 1;
         if (index == 1)
-            min[node.mAxis] += size[node.mAxis];
+            min[node.getAxis()] += size[node.getAxis()];
         
-        /*uint index = loc[node.mAxis] < size[node.mAxis] ? 0 : 1;
+        /*uint index = loc[node.getAxis()] < size[node.getAxis()] ? 0 : 1;
         if (index == 1)
-            loc[node.mAxis] -= size[node.mAxis];*/
+            loc[node.getAxis()] -= size[node.getAxis()];*/
 
         node = buildSTreeNode(node.mChildren[index]);
     }
@@ -355,12 +390,12 @@ uint sampleSTree(float3 loc, float3 min, float3 size, STreeNode node)
 }
 
 // Loc must be relative!! (must lie between (0,0,0) and size)
-HemisphereSample sampleSTree(float3 loc, SampleGenerator sg)
+HemisphereSample sampleSTree(float3 loc, const ShadingData sd, inout SampleGenerator sg)
 {
     // decent into STree to find leaf node
     uint dTreeInd = sampleSTree(loc, gSceneMin, gSceneMax - gSceneMin, buildSTreeNode(0));
     // sample from DTree in leaf node
-    return sampleDTree(dTreeInd, sg);
+    return sampleDTree(dTreeInd, sd, sg);
 }
 
 /*float calc_pdf(float3 dir, float3 loc, float3 size)
@@ -391,41 +426,11 @@ void scatterRayClosestHit(
     inout ScatterRayPayload payload : SV_RayPayload, // Payload defined above
     BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes) // Intersection Attributes of hardware raytracing hardware
 {
-    for (int i = 0; i < 2; i++) // TODO test
-        sampleNext2D(payload.mSampleGenerator);
-    
-    VertexData v = getVertexData(hitParams, PrimitiveIndex(), attribs);
-    const uint materialID = gScene.getMaterialID(hitParams.getGlobalHitID());
-    ShadingData sd = prepareShadingData(v, materialID, gScene.materials[materialID],
-        gScene.materialResources[materialID], -WorldRayDirection(), 0.f);
-    
-    float3 rayOrigin = sd.computeNewRayOrigin();
-    
-    /*SceneLightSample sls; //
-    bool sampleSucceeded = sampleSceneLights(
-        gData.params, gData.envMapSampler, gData.emissiveLightSampler, sd, rayOrigin, 1, sg, sls
-    );
-
-    RayDesc ray = { };
-    ray.Origin = absPos;
-    ray.Direction = sampleDir;
-    ray.TMin = 1e-3f; // Maybe change
-    ray.TMax = kRayTMax; // kRayTMax is defined somewhere*/
-    
-    //if (payload.mSamplePdf >= 0)
-    payload.mLTotal += payload.mEvalEmissive ? payload.mThrouhgput * sd.emissive : float3(0.f);
-    payload.mEvalEmissive = 1;
-    
-    HemisphereSample nextSample = sampleSTree(rayOrigin, payload.mSampleGenerator);
-    
-    payload.mNextSampleDir = nextSample.getSampleAsDir();
-    payload.mNextSampleOrigin = rayOrigin;
-    payload.mThrouhgput *= evalBSDFCosine(sd, payload.mNextSampleDir) * rcp(nextSample.pdf);
-    
-    payload.mSamplePdf = nextSample.pdf;
-
-    payload.mSampleTreeIndex = 0;
-
+    HitInfo info = { };
+    info.instanceID = hitParams.getGlobalHitID();
+    info.primitiveIndex = PrimitiveIndex();
+    info.barycentrics = attribs.barycentrics;
+    payload.mPackedHitInfoData = info.encode();
 }
 
 // Scatter ray miss
@@ -433,6 +438,7 @@ void scatterRayClosestHit(
 void scatterRayMiss(inout ScatterRayPayload rayPayload : SV_RayPayload)
 {
     // Do nothing, payload was initilised as invalid!
+    // Eval environment map if direct light sampling is disabled.
 }
 
 /*******************************/
@@ -450,13 +456,6 @@ void shadowRayAnyHit(
     // Possible ignore hit if material is transparent (alpha == 0.f)
     AcceptHitAndEndSearch();
 }
-
-// Shadow ray closest hit (not needed for shadow rays)
-//[shader("closesthit")]
-//void shadowRayClosestHit( /* args */)
-//{
-//    // Not needed
-//}
 
 // Shadow ray miss
 [shader("miss")]
@@ -519,116 +518,134 @@ void main()
     if (gWorldPos[screenPos].w != 0)
     {
         ScatterRayPayload payload = { };
-        payload.mSampleGenerator = SampleGenerator.create(screenPos, gFrameIndex);
+        SampleGenerator sg = SampleGenerator.create(screenPos, gFrameIndex);
 
-        for (int i = 0; i < 2; i++) // TODO test
-            sampleNext2D(payload.mSampleGenerator);
-        //SampleGenerator sg = SampleGenerator.create(screenPos, gFrameIndex);
-        //float3 relPos = absPos - gSceneMin;
-            HemisphereSample nextSample = sampleSTree(absPos, payload.mSampleGenerator);
-        float3 sampleDir = nextSample.getSampleAsDir();
-        float pdf = nextSample.pdf;
-        //float3 toCamera = float3(0.f); // TODO init to direction of shading point to camera
+        for (int i = 0; i < 2; i++)
+            sampleNext2D(sg);
         
-        RayDesc ray = { };
-        ray.Origin = absPos;
-        ray.Direction = sampleDir;
-        ray.TMin = 1e-3f; // Maybe change
-        ray.TMax = kRayTMax; // kRayTMax is defined somewhere
+        
         //ScatterRayPayload payload = { };
-        payload.mLTotal = sd.emissive;
-        payload.mThrouhgput = evalBSDFCosine(sd, sampleDir) * rcp(pdf);
-        payload.mNextSampleDir = sampleDir;
-        payload.mNextSampleOrigin = absPos;
-        payload.mSamplePdf = pdf;
-        payload.mEvalEmissive = 0;
-        //payload.mSampleGenerator = gSampleGenerator;
-        //payload.mPackedHitInfoData = HitInfo::kInvalidIndex;
-        
-        //TraceRay(gRtScene, RAY_FLAG_NONE, 0xff, 0, hitProgramCount, 0, ray, payload);
+        MyPathData pathData = { };
+        pathData.mLTotal = K_EVAL_FIRST_DIRECT_BOUNCE ? sd.emissive : 0;
+        pathData.mSamplePdf = -1;
+        pathData.mThroughput = 1;
+        pathData.mCurrentRayDir = float3(0.f);
+        pathData.mCurrentRayOrigin = absPos;
 
-        const uint kMaxBounces = 3; // warining: waaaaay too large
-        bool keepGoing = true;
+        const uint kMaxBounces = K_MAX_BOUNCES;
+        //bool keepGoing = true;
         uint i = 0;
-        float3 pathPrefixThroughput = payload.mThrouhgput;
-        float3 pathPrefixLTotal = payload.mLTotal;
-        float3 pathPrefixDir = payload.mNextSampleDir;
-        float3 pathPrefixOrigin = payload.mNextSampleOrigin;
-        float pathPrefixPdf = payload.mSamplePdf;
-        payload.mThrouhgput = float3(1.f);
-        payload.mLTotal = float3(0.f);
+        MyPathData prefixPath = { };
+        prefixPath.mThroughput = 1;
+        prefixPath.mLTotal = 0;
+        prefixPath.mCurrentRayOrigin = pathData.mCurrentRayOrigin;
+        prefixPath.mCurrentRayDir = pathData.mCurrentRayDir;
+        prefixPath.mSamplePdf = pathData.mSamplePdf;
 
-        uint pathIndex = sampleNext1D(payload.mSampleGenerator) * kMaxBounces;
+        uint pathIndex = sampleNext1D(sg) * kMaxBounces;
         pathIndex = max(pathIndex, kMaxBounces - 1); // should not ever happen
         //pathIndex = 0;
         
-        while (keepGoing)
+        RayDesc ray = { };
+        while (true)
         {
-            if (i == pathIndex)
+            if (K_EVAL_DIRECT)
             {
-                pathPrefixLTotal += pathPrefixThroughput * payload.mLTotal;
-                pathPrefixThroughput *= payload.mThrouhgput;
-                pathPrefixDir = payload.mNextSampleDir;
-                pathPrefixOrigin = payload.mNextSampleOrigin;
-                pathPrefixPdf = payload.mSamplePdf;
-                payload.mThrouhgput = float3(1.f);
-                payload.mLTotal = float3(0.f);
+                if (K_EVAL_FIRST_DIRECT_BOUNCE || i > 0) // Written to aid compiler in optimisation
+                {
+                    SceneLightSample sls = { };
+                    bool valid = sampleSceneLights(gData.params, gData.envMapSampler, gData.emissiveLightSampler, sd, pathData.mCurrentRayOrigin, 1, sg, sls);
+                    ShadowRayPayload shadowRayPayload = { };
+                    shadowRayPayload.mVisible = false;
+                
+                    ray = {
+                    };
+                    ray.Origin = pathData.mCurrentRayOrigin;
+                    ray.Direction = sls.dir;
+                    ray.TMin = 1e-3f;
+                    ray.TMax = sls.distance;
+
+                    TraceRay(gRtScene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff, 1, hitProgramCount, 1, ray, shadowRayPayload);
+
+                    if (valid && shadowRayPayload.mVisible)
+                    {
+                        pathData.mLTotal += pathData.mThroughput * sls.Li * evalBSDFCosine(sd, sls.dir);
+                    }
+                }
+            }
+
+            if (i++ >= kMaxBounces)
+                break;
+
+            HemisphereSample nextSample = sampleSTree(pathData.mCurrentRayOrigin, sd, sg);
+    
+            pathData.mCurrentRayDir = nextSample.getSampleAsDir();
+
+            if (dot(pathData.mCurrentRayDir, sd.faceN) < 0.f)
+            {
+                break;
+            }
+    
+            pathData.mThroughput *= evalBSDFCosine(sd, pathData.mCurrentRayDir) * rcp(nextSample.pdf);
+    
+            pathData.mSamplePdf = nextSample.pdf;
+            
+            if (i == 0 || i == pathIndex)
+            {
+                prefixPath.mLTotal += prefixPath.mThroughput * pathData.mLTotal;
+                prefixPath.mThroughput *= pathData.mThroughput;
+                prefixPath.mCurrentRayOrigin = pathData.mCurrentRayOrigin;
+                prefixPath.mCurrentRayDir = pathData.mCurrentRayDir;
+                prefixPath.mSamplePdf = pathData.mSamplePdf;
+                
+                pathData.mThroughput = float3(1.f);
+                pathData.mLTotal = float3(0.f);
             }
             
             ray = { };
-            ray.Origin = payload.mNextSampleOrigin;
-            ray.Direction = payload.mNextSampleDir;
+            ray.Origin = pathData.mCurrentRayOrigin;
+            ray.Direction = pathData.mCurrentRayDir;
             ray.TMin = 1e-3f;
             ray.TMax = kRayTMax;
 
-            payload.mNextSampleDir = float3(0.f, 0.f, 0.f);
-
-            TraceRay(gRtScene, RAY_FLAG_NONE, 0xff, 0, hitProgramCount, 0, ray, payload);
+            payload.mPackedHitInfoData = {
+                HitInfo::kInvalidIndex
+            }; // cuz k den
             
-            keepGoing = (i++ < (kMaxBounces - 1)) && any(payload.mNextSampleDir != 0.f);
+            TraceRay(gRtScene, RAY_FLAG_NONE, 0xff, 0, hitProgramCount, 0, ray, payload);
+
+            if (payload.mPackedHitInfoData.x == HitInfo::kInvalidIndex)
+               break;
+            
+            HitInfo hit = { };
+            hit.decode(payload.mPackedHitInfoData);
+            VertexData v = gScene.getVertexData(hit);
+            const uint materialID = gScene.getMaterialID(hit.instanceID);
+            sd = prepareShadingData(v, materialID, gScene.materials[materialID],
+                gScene.materialResources[materialID], -ray.Direction, 0.f);
+            
+            float3 rayOrigin = sd.computeNewRayOrigin();
+            pathData.mCurrentRayOrigin = rayOrigin;
+
+            if (K_EVAL_FIRST_DIRECT_BOUNCE || i != 1)
+                pathData.mLTotal += (!K_EVAL_DIRECT) ? pathData.mThroughput * sd.emissive : float3(0.f);
         }
+            
+        cameraContribution = prefixPath.mLTotal + prefixPath.mThroughput * pathData.mLTotal;
 
-        
-        // always interpret a hit, even if ray missed everything
-        //HitInfo hit;
-        //hit.decode(payload.mPackedHitInfoData);
-        //const uint materialID = gScene.getMaterialID(hit.meshInstanceID);
-        //StaticVertexData svd[3];
-        //VertexData vertexData = gScene.getVertexData(hit, svd);
-
-        //RayFootprint rfp = { }; // assumes no ray footprint
-
-        //ShadingData sd_emissive = prepareShadingData(vertexData, rfp, svd, hit, absPos, normalize(sampleDir)); // is fucked
-    
-        //ShadingData sd_emissive = prepareShadingData(vertexData, materialID, gScene.materials[materialID],
-        //    gScene.materialResources[materialID], -sampleDir, 0.f);
-    
-        
-
-        //float3 emissive = sd.emissive;
-        //float3 brdf = evalBSDFCosine(sd, sampleDir); // eval brdf*cos of camera point
-        ////float3 test = emissive + brdf * payload.mEmissive * rcp(pdf);
-        ////float3 test = isfinite(payload.mEmissive) ? 1 : 0;
-        // bool validHit = any(payload.mNextSampleDir != float3(0.f)); // hits are always valid!!
-        //cameraContribution = validHit ? emissive + brdf * payload.mEmissive * rcp(pdf) : emissive;
-        cameraContribution = pathPrefixLTotal + pathPrefixThroughput * payload.mLTotal;
-        ////cameraContribution = validHit ? emissive + brdf * sd_emissive.emissive * rcp(pdf) : emissive;
-
-        sampleDataPos = /*validHit ?*/ float4(pathPrefixOrigin, 0.f) /*: float4(0.f)*/;
-        sampleDataRadiance = /*validHit ?*/ float4(payload.mLTotal, 0.f) /*: float4(0.f)*/;
-        //sampleDataRadiance = validHit ? float4(sd_emissive.emissive, 0.f) : float4(0.f);
-        sampleDataDir = /*validHit ?*/ float4(dirToCanonical(pathPrefixDir), pathPrefixPdf, 0.f) /*: float4(0.f, 0.f, -1.f, 0.f)*/;
+        sampleDataPos = float4(prefixPath.mCurrentRayOrigin, 0.f);
+        sampleDataRadiance = float4(pathData.mLTotal, 0.f);
+        sampleDataDir = float4(dirToCanonical(prefixPath.mCurrentRayDir), prefixPath.mSamplePdf, 0.f);
         
     }
-    //AllMemoryBarrier();
-    //gSamplePos[screenPos] = float4(relPos, 0.f);
-    //gSampleRadiance[screenPos] = float4(payload.mEmissive, 0.f);
-    //gSamplePdf[screenPos] = float4(dirToCanonical(sampleDir), pdf, 0.f);
+    else
+    {
+        // eval env map
+    }
     
     gSamplePos[screenPos] = sampleDataPos;
     gSampleRadiance[screenPos] = sampleDataRadiance;
     gSamplePdf[screenPos] = sampleDataDir;
 
     gOutputColor[screenPos] = float4(cameraContribution, 1.f);
-    //AllMemoryBarrier();
 }

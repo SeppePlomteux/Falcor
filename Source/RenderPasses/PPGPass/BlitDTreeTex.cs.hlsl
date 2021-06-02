@@ -28,7 +28,7 @@ void main( uint3 DTid : SV_DispatchThreadID )
         gDTreeSums[DTid.xy] = float4(0.f);
         gDTreeChildren[DTid.xy] = uint2(0);
         if (DTid.x == 0)
-            gDTreeSize[DTid.y] = DTid.y == 0 ? 1 : 0;
+            gDTreeSize[DTid.y] = 1;
         if (DTid.x % 2 == 0)
         {
             uint2 parentIndex = DTid.xy;

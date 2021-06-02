@@ -26,7 +26,7 @@ struct STreeNode
     /* Block border here */
     uint mNodeIndex;
     uint2 mTexelPos;
-    float statWeight;
+    float mStatWeight;
     /* Block border here */
     
     bool isLeaf()
@@ -41,7 +41,7 @@ struct STreeNode
 
     uint getParent()
     {
-        return mAxis & G_30_BITMASK_LEFT >> 2;
+        return (mAxis & G_30_BITMASK_LEFT) >> 2;
     }
 };
 
@@ -55,13 +55,13 @@ STreeNode buildSTreeNode(uint2 texelPos, uint2 texSize)
     res.mChildren = packedData.zw;
     res.mNodeIndex = nodeIndex;
     res.mTexelPos = texelPos;
-    res.statWeight = gSTreeStatWeight[texelPos];
+    res.mStatWeight = gSTreeStatWeight[texelPos];
     return res;
 }
 
-bool isHighestChild(STreeNode parent, uint childIndex)
+bool isHighestChild(STreeNode parent, uint childAbsoluteIndex)
 {
-    return all(parent.mChildren <= childIndex);
+    return all(parent.mChildren <= childAbsoluteIndex);
 }
 
 [numthreads(8, 4, 1)]
@@ -88,10 +88,10 @@ void main( uint3 DTid : SV_DispatchThreadID )
     uint parentIndex = node.getParent();
     uint2 parentTexCoords = toTexCoords(parentIndex, texSize);
     node = buildSTreeNode(parentTexCoords, texSize);
-    bool keepGoing = true;
-    while (keepGoing)
+    //bool keepGoing = true;
+    while (true)
     {
-        if (! isHighestChild(node, lineairIndex))
+        if (!isHighestChild(node, lineairIndex))
             break;
         DeviceMemoryBarrier();
         gSTreeStatWeight[parentTexCoords] =

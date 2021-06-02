@@ -1,5 +1,5 @@
 import Utils.Math.MathHelpers;
-import RenderPasses.Reservoir;
+import RenderPasses.Shared.Reservoir;
 import Utils.Sampling.SampleGenerator;
 import Experimental.Scene.Material.MaterialShading;
 

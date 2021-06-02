@@ -43,7 +43,7 @@ struct STreeNode
 
     uint getParent()
     {
-        return mAxis & G_30_BITMASK_LEFT >> 2;
+        return (mAxis & G_30_BITMASK_LEFT) >> 2;
     }
 
     [mutating]void setAxis(uint axis)
@@ -80,14 +80,14 @@ STreeNode buildSTreeNode(uint2 texelPos, uint2 texSize)
 uint updateDTreeIndex(uint oldIndex)
 {
     uint2 deletedDTrees = gDTreeEditData[2];
-    deletedDTrees = oldIndex > deletedDTrees ? 1 : 0;
+    deletedDTrees = (0 < deletedDTrees && deletedDTrees < oldIndex) ? 1 : 0;
     return oldIndex - (deletedDTrees.x + deletedDTrees.y);
 }
 
 uint updateSTreeIndex(uint oldIndex)
 {
     uint2 deletedSTrees = gDTreeEditData[1];
-    deletedSTrees = oldIndex > deletedSTrees ? 1 : 0;
+    deletedSTrees = (0 < deletedSTrees && deletedSTrees < oldIndex) ? 1 : 0;
     return oldIndex - (deletedSTrees.x + deletedSTrees.y);
 }
 
@@ -104,8 +104,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
     uint lineairIndex = toLinearIndex(DTid.xy, texSize);
     if (lineairIndex >= amountOfSTrees)
         return;
-
+    
     STreeNode oldNode = buildSTreeNode(DTid.xy, texSize);
+    uint2 deleted = gDTreeEditData[1];
+    if (any(oldNode.mNodeIndex == deleted))
+        return;
+    
     oldNode.mChildren.x = updateSTreeIndex(oldNode.mChildren.x);
     oldNode.mChildren.y = updateSTreeIndex(oldNode.mChildren.y);
     oldNode.mDTreeIndex = updateDTreeIndex(oldNode.mDTreeIndex);
@@ -113,9 +117,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     oldNode.mNodeIndex = updateSTreeIndex(oldNode.mNodeIndex);
     oldNode.mTexelPos = toTexCoords(oldNode.mNodeIndex, texSize);
 
-    uint2 deleted = gDTreeEditData[1];
-    if (any(oldNode.mNodeIndex == deleted))
-        return;
     DeviceMemoryBarrier();
     oldNode.persist();
 }

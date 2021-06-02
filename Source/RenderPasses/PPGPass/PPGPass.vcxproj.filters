@@ -28,6 +28,7 @@
     <ShaderSource Include="UpdateSTreeStatWeight.cs.hlsl" />
     <ShaderSource Include="BuildSTree.cs.hlsl" />
     <ShaderSource Include="ResetFreedNodesTex.cs.hlsl" />
+    <ShaderSource Include="PPGReservoir.slang" />
   </ItemGroup>
   <ItemGroup>
     <None Include="CompressDTreeTexRows.cs.hlsl" />

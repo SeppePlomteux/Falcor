@@ -46,65 +46,91 @@ void storeParents(uint2 parents, uint2 texelPos)
     gDTreeParent[texelPos] = packedParents;
 }
 
+uint getParent(const uint treeIndex, const uint nodeIndex)
+{
+    uint2 parentTexelPos = uint2(nodeIndex / 2, treeIndex);
+    uint packetParents = gDTreeParent[parentTexelPos];
+    return (nodeIndex % 2 == 0) ? (packetParents >> 16) : (packetParents & G_16_BITMASK_RIGHT);
+}
+
+void storeParent(const uint treeIndex, const uint nodeIndex, const uint newParent)
+{
+    uint2 parentTexelPos = uint2(nodeIndex / 2, treeIndex);
+    uint packetParents = gDTreeParent[parentTexelPos];
+    if (nodeIndex % 2 == 0)
+    {
+        packetParents = (newParent << 16) + (packetParents & G_16_BITMASK_RIGHT);
+    }
+    else
+    {
+        packetParents = (packetParents & G_16_BITMASK_LEFT) + (newParent & G_16_BITMASK_RIGHT);
+    }
+    gDTreeParent[parentTexelPos] = packetParents;
+}
+
+uint updateNodeIndex(const uint oldIndex, const uint freedNode)
+{
+    return (0 < freedNode && freedNode < oldIndex) ? oldIndex - 1 : oldIndex;
+}
+
+uint2 updateNodeIndex(const uint2 oldIndex, const uint freedNode)
+{
+    return (0 < freedNode && freedNode < oldIndex) ? oldIndex - 1 : oldIndex;
+}
+
+uint4 updateNodeIndex(const uint4 oldIndex, const uint freedNode)
+{
+    return (0 < freedNode && freedNode < oldIndex) ? oldIndex - 1 : oldIndex;
+}
+
 [numthreads(32, 1, 1)]
 void main( uint3 DTid : SV_DispatchThreadID )
 {
+    if (DTid.z > 0)
+        return;
     if (DTid.y >= gSTreeMetaData[1])
         return;
-    if (DTid.x >= gDTreeSize[DTid.y] + 1)
+    uint size = gDTreeSize[DTid.y];
+    if (DTid.x >= size)
         return;
 
-    uint freedNodes = gFreedNodes[DTid.y];
-    bool shouldNotShuffle = DTid.x <= freedNodes || freedNodes == 0;
-
-    uint4 children = getChildren(DTid.xy);
-    children = children == freedNodes ? 0 : children;
-    children = children > freedNodes ? children - 1 : children;
-    storeChildren(children, DTid.xy);
-
-    [branch]
-    if (DTid.x % 2 == 0)
-    {
-        uint2 parentTexelPos = DTid.xy;
-        parentTexelPos.x /= 2;
-        uint2 parents = getParents(parentTexelPos);
-        parents = parents > freedNodes ? parents - 1 : parents;
-        storeParents(parents, parentTexelPos);
-    }
+    uint freedNode = gFreedNodes[DTid.y];
     
-    if (all(shouldNotShuffle))
-        return;
-    if (any(DTid.x == freedNodes))
+    if (freedNode == 0)
         return;
 
-    // ALS FREEDNODE ONEVEN IS, MOET EERSTVOLGENDE THREAD OPPASSEN
+    if (DTid.x == freedNode)
+        return;
     
-    float4 sumToCopy = gDTreeSums[DTid.xy];
-    uint2 childrenCopy = gDTreeChildren[DTid.xy];
-    uint parentCopy;
-    if (DTid.x % 2 == 0)
-    {
-        uint2 parentIndex = DTid.xy;
-        parentIndex.x /= 2;
-        parentCopy = (gDTreeParent[parentIndex - uint2(1, 0)] & G_16_BITMASK_RIGHT) << 16;
-        if (DTid.x = freedNodes + 1)
-            parentCopy = gDTreeParent[parentIndex - uint2(1, 0)] & G_16_BITMASK_LEFT;
-        parentCopy += (gDTreeParent[parentIndex] & G_16_BITMASK_LEFT) >> 16;
-    }
+    float4 oldSums = gDTreeSums[DTid.xy];
+    uint4 oldChildren = getChildren(DTid.xy);
+    oldChildren = updateNodeIndex(oldChildren, freedNode);
+    uint oldParent = getParent(DTid.y, DTid.x);
+    oldParent = updateNodeIndex(oldParent, freedNode);
     
     DeviceMemoryBarrier();
     
-    uint2 prevIndex = DTid.xy - uint2(1, 0);
-    gDTreeSums[prevIndex] = sumToCopy;
-    gDTreeChildren[prevIndex] = childrenCopy;
-    if (DTid.x == 0)
-        gDTreeSize[DTid.y] -= 1;
-    if (DTid.x % 2 == 0)
-    {
-        uint2 parentIndex = DTid.xy;
-        parentIndex.x /= 2;
-        parentIndex.x--;
-        gDTreeParent[parentIndex] = parentCopy;
-    }
+    uint2 newIndex = uint2(updateNodeIndex(DTid.x, freedNode), DTid.y);
+    gDTreeSums[newIndex] = oldSums;
+    storeChildren(oldChildren, newIndex);
 
+    if (newIndex.x % 2 == 0)
+    {
+        storeParent(DTid.y, newIndex.x, oldParent);
+    }
+    DeviceMemoryBarrier();
+    if (newIndex.x % 2 != 0)
+    {
+        storeParent(DTid.y, newIndex.x, oldParent);
+    }
+    
+    DeviceMemoryBarrier();
+
+    if (DTid.x == size - 1)
+    {
+        gDTreeChildren[DTid.xy] = uint2(0);
+        gDTreeSums[DTid.xy] = float4(0.f);
+        storeParent(DTid.y, DTid.x, 0);
+        gDTreeSize[DTid.y] -= 1;
+    }
 }

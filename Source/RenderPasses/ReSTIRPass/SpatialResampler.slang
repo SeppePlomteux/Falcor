@@ -4,7 +4,7 @@
 
 import Utils.Math.MathHelpers;
 import Utils.Sampling.SampleGenerator;
-import RenderPasses.Reservoir;
+import RenderPasses.Shared.Reservoir;
 import Experimental.Scene.Material.MaterialShading;
 import Scene.Raytracing;
 

@@ -10,17 +10,10 @@ Texture1D<uint> gSTreeMetaData;
 
 struct DTreeNode
 {
-    // if mSums == (0, 0, 0, 0), then node is empty
     float4 mSums;
     uint2 mChildren;
     uint2 mTexelPos;
     uint mParent;
-
-    // Encode a leaf as a node with child indices 0 (which is the root)
-    bool isLeaf()
-    {
-        return all(mChildren == 0);
-    }
 
     uint getChildIndex(uint localIndex)
     {
@@ -28,9 +21,19 @@ struct DTreeNode
         return localIndex & 1 ? packedData & G_16_BITMASK_RIGHT : packedData >> 16;
     }
 
+    // Encode a leaf as a node with index 0
+    bool isLeaf(uint relativeIndex)
+    {
+        return getChildIndex(relativeIndex) == 0;
+    }
+
+    bool allChildsAreLeaf()
+    {
+        return all(mChildren == 0);
+    }
+    
     void setSum(uint absoluteChildIndex, float newVal)
     {
-        uint relIndex = 0;
         for (int i = 0; i < 4; i++)
         {
             [branch]
@@ -52,7 +55,7 @@ struct DTreeNode
     void addToSum(uint localChildIndex, float toAdd)
     {
         float4 newVal = float4(0.f);
-        //newVal[localChildIndex] = toAdd;
+        
         newVal[localChildIndex] = toAdd; // ALS DEZE SHADER NI WERKT, KIJK HIER NAAR
 
         gDTreeSums[mTexelPos] += newVal;
@@ -69,7 +72,7 @@ DTreeNode buildDTreeNode(uint treeIndex, uint nodeIndex)
     parentTexelPos.x /= 2;
     uint packedParentData = gDTreeParent[parentTexelPos];
 
-    res.mParent = res.mTexelPos.x % 2 ? packedParentData & G_16_BITMASK_RIGHT : packedParentData >> 16;
+    res.mParent = (res.mTexelPos.x % 2 == 1) ? (packedParentData & G_16_BITMASK_RIGHT) : (packedParentData >> 16);
     
     return res;
 }
@@ -94,12 +97,12 @@ void main( uint3 DTid : SV_DispatchThreadID )
         return;
     
     DTreeNode node = buildDTreeNode(DTid.y, DTid.x);
-    if (node.isLeaf())
+    if (!node.allChildsAreLeaf())
         return;
 
     float nodeSum = node.mSums.x + node.mSums.y + node.mSums.z + node.mSums.w;
     uint oldNodeIndex = DTid.x, currNodeIndex = DTid.x;
-    bool keepGoing = true;
+    bool keepGoing = currNodeIndex != 0;
 
     while (keepGoing)
     {
@@ -110,9 +113,11 @@ void main( uint3 DTid : SV_DispatchThreadID )
             return;
         node.refreshSums();
         nodeSum = node.mSums.x + node.mSums.y + node.mSums.z + node.mSums.w;
-        oldNodeIndex = currNodeIndex;
-        if (currNodeIndex == 0) // We got to the root!
+        
+        //oldNodeIndex = currNodeIndex;
+        if (currNodeIndex == 0 /*|| currNodeIndex >= oldNodeIndex*/) // We got to the root!
             keepGoing = false;
+        oldNodeIndex = currNodeIndex;
     }
     
 }

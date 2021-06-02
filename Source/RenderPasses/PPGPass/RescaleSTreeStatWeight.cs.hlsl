@@ -1,4 +1,4 @@
-#define K_SCALE_FACTOR 0.9f
+//#define K_SCALE_FACTOR 0.9f
 
 Texture1D<uint> gSTreeMetaData;
 RWTexture2D<float> gSTreeStatWeight;
